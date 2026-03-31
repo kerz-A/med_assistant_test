@@ -75,6 +75,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .proto-section{margin-bottom:14px}
 .proto-title{font-size:.76rem;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
 .proto-field{margin-bottom:8px}
+.patient-row{display:flex;gap:8px}
 .proto-label{font-size:.72rem;font-weight:600;color:var(--text-sec);margin-bottom:2px;display:block}
 .field-input{width:100%;padding:6px 8px;font-size:.82rem;font-family:inherit;border:1px solid var(--border);border-radius:6px;background:var(--bg);resize:vertical;min-height:32px;transition:border-color .2s,background .2s}
 .field-input:read-only{cursor:default;color:var(--text)}

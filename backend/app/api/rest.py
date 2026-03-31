@@ -10,11 +10,14 @@ router = APIRouter(prefix="/api")
 @router.get("/health")
 async def health():
     import torch
+    from ..config import settings
     gpu = torch.cuda.is_available()
     return {
-        "status": "ok", "version": "3.0",
+        "status": "ok", "version": "3.1",
         "gpu_available": gpu,
         "gpu_name": torch.cuda.get_device_name(0) if gpu else None,
+        "llm_provider": settings.llm_provider,
+        "llm_model": settings.llm_model,
     }
 
 

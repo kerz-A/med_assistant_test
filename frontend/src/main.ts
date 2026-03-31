@@ -229,6 +229,25 @@ class App {
   private renderProtocol(): void {
     this.protocol.innerHTML = `
       <div class="proto-section">
+        <div class="proto-title">Пациент</div>
+        <div class="patient-fields">
+          <div class="proto-field">
+            <label class="proto-label">ФИО</label>
+            <textarea class="field-input" id="field-full_name" data-field="full_name" rows="1" readonly></textarea>
+          </div>
+          <div class="patient-row">
+            <div class="proto-field" style="flex:1">
+              <label class="proto-label">Возраст</label>
+              <textarea class="field-input" id="field-age" data-field="age" rows="1" readonly></textarea>
+            </div>
+            <div class="proto-field" style="flex:1">
+              <label class="proto-label">Пол</label>
+              <textarea class="field-input" id="field-gender" data-field="gender" rows="1" readonly></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="proto-section">
         <div class="proto-title">Данные осмотра</div>
         ${EXAM_FIELDS.map(f => `
           <div class="proto-field">
@@ -263,6 +282,22 @@ class App {
   }
 
   private updateProtocolFields(proto: Protocol): void {
+    // Patient info
+    const pi = proto.patient_info ?? {};
+    const nameEl = document.getElementById("field-full_name") as HTMLTextAreaElement | null;
+    const ageEl = document.getElementById("field-age") as HTMLTextAreaElement | null;
+    const genderEl = document.getElementById("field-gender") as HTMLTextAreaElement | null;
+    if (nameEl && pi.full_name) { nameEl.value = pi.full_name; nameEl.classList.add("updated"); setTimeout(() => nameEl.classList.remove("updated"), 1500); }
+    if (ageEl && pi.age != null) { ageEl.value = String(pi.age); ageEl.classList.add("updated"); setTimeout(() => ageEl.classList.remove("updated"), 1500); }
+    if (genderEl && pi.gender) { genderEl.value = pi.gender; genderEl.classList.add("updated"); setTimeout(() => genderEl.classList.remove("updated"), 1500); }
+
+    // Also update header
+    if (pi.full_name || pi.age) {
+      this.patientInfoEl.textContent = `${pi.full_name || "—"}, ${pi.age || "?"} лет, ${pi.gender || "?"}`;
+      this.patientInfoEl.classList.add("visible");
+    }
+
+    // Exam data
     const exam = proto.exam_data ?? {};
     for (const f of EXAM_FIELDS) {
       const el = document.getElementById(`field-${f.key}`) as HTMLTextAreaElement | null;

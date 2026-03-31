@@ -50,6 +50,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("[3/3] Initializing LLM client...")
     llm_service.initialize()
+    if settings.llm_provider == "ollama":
+        logger.info("[3/3] Pulling Ollama model %s (first run may take a few minutes)...", settings.llm_model)
+        await llm_service.pull_ollama_model()
     logger.info("[3/3] LLM ready")
 
     logger.info("=" * 60)

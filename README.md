@@ -16,10 +16,14 @@
 ## Быстрый старт
 
 ```bash
-cp .env.example .env   # заполнить GROQ_API_KEY и HF_TOKEN
-docker compose up --build
+cp .env.example .env   # выбрать LLM_PROVIDER: ollama или groq
 
-# С GPU (NVIDIA):
+# Вариант A — полностью локально (Ollama + Qwen2.5-3B):
+# В .env: LLM_PROVIDER=ollama (по умолчанию)
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+
+# Вариант B — облачный LLM (Groq):
+# В .env: LLM_PROVIDER=groq, GROQ_API_KEY=...
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
 
@@ -31,7 +35,8 @@ Frontend: http://localhost:3000 | Backend: http://localhost:8000/api/health
 |-----------|-----------|
 | ASR | faster-whisper medium/large-v3 (GPU) |
 | Диаризация | pyannote.audio 3.1 (GPU) |
-| LLM | Groq Llama 3.3 70B |
+| LLM (локально) | Ollama + Qwen2.5-3B (GPU, ~2 GB VRAM) |
+| LLM (облако) | Groq Llama 3.3 70B (переключаемый) |
 | Backend | Python 3.11, FastAPI, WebSocket |
 | Frontend | TypeScript, Vite |
 

@@ -35,6 +35,9 @@ class SessionState:
         self.sequence = 0
         self.is_processing = False
         self._lock = asyncio.Lock()
+        # FIX #1: Track calibration zone for stable speaker mapping
+        self.calibration_end_time: float = 0.0  # seconds of audio when calibration ended
+        self.doctor_raw_label: str | None = None  # pyannote label of doctor from calibration
         logger.info("[SESSION] Created: id=%s speakers=%d", self.session_id, num_speakers)
 
     def add_audio(self, pcm_bytes: bytes) -> None:

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     ollama_base_url: str = "http://ollama:11434"
-    ollama_model: str = "qwen2.5:14b"
+    ollama_model: str = "qwen2.5:3b"
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
 

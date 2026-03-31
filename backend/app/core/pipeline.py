@@ -45,9 +45,12 @@ class ProcessingPipeline:
         )
 
         # 1. ASR + Diarization in PARALLEL
+        # FIX: Cap diarization window to last 60s to prevent exponential slowdown
         t0 = time.monotonic()
+        max_diar_samples = 60 * SAMPLE_RATE  # 60 seconds max for diarization
+        diar_audio = full_audio[-max_diar_samples:] if len(full_audio) > max_diar_samples else full_audio
         asr_task = self.transcription.transcribe(new_audio)
-        diar_task = self.diarization.diarize(full_audio, SAMPLE_RATE, session.num_speakers)
+        diar_task = self.diarization.diarize(diar_audio, SAMPLE_RATE, session.num_speakers)
         asr_segments, diar_segments = await asyncio.gather(asr_task, diar_task)
         parallel_ms = int((time.monotonic() - t0) * 1000)
 
@@ -60,32 +63,41 @@ class ProcessingPipeline:
         if not asr_segments:
             return [], 0
 
-        # 2. Alignment with persistent speaker_map
+        # 2. Alignment with persistent speaker_map + calibration verification
         time_offset = max(0, session.audio_buffer.total_duration - len(new_audio) / SAMPLE_RATE)
-        utterances = align_segments(asr_segments, diar_segments, session.speaker_map, time_offset)
+        utterances = align_segments(
+            asr_segments, diar_segments, session.speaker_map, time_offset,
+            calibration_end_time=session.calibration_end_time,
+        )
 
         if not utterances:
             return [], 0
 
-        # 3. Medical term correction (via Groq)
-        t0 = time.monotonic()
-        for i, u in enumerate(utterances):
-            corrected = await self.llm.correct_medical_terms(u.text)
-            utterances[i] = Utterance(
-                speaker=u.speaker, text=corrected,
-                start=u.start, end=u.end,
-            )
-        correct_ms = int((time.monotonic() - t0) * 1000)
-        logger.info("[PIPELINE] Medical correction: %dms", correct_ms)
+        # 3. Medical term correction — only during CALIBRATION (extraction prompt handles it during RECORDING)
+        if session.stage != SessionStage.RECORDING:
+            t0 = time.monotonic()
+            all_texts = [u.text for u in utterances]
+            combined = " ||| ".join(all_texts)
+            corrected_combined = await self.llm.correct_medical_terms(combined)
+            corrected_parts = corrected_combined.split(" ||| ")
+            if len(corrected_parts) == len(utterances):
+                for i, part in enumerate(corrected_parts):
+                    utterances[i] = Utterance(
+                        speaker=utterances[i].speaker, text=part.strip(),
+                        start=utterances[i].start, end=utterances[i].end,
+                    )
+            correct_ms = int((time.monotonic() - t0) * 1000)
+            logger.info("[PIPELINE] Medical correction: %dms", correct_ms)
 
-        # 4. Protocol extraction (via Groq) — only during RECORDING, not calibration
+        # 4. Update transcript BEFORE extraction so LLM sees full context
+        session.update_transcript(utterances)
+
+        # 5. Protocol extraction — during RECORDING only (1 LLM call per cycle, handles correction too)
         if session.stage == SessionStage.RECORDING:
             t0 = time.monotonic()
-            patient_utterances = [u for u in utterances if u.speaker == "patient"]
-            if patient_utterances:
-                session.protocol = await self.llm.extract_protocol_data(
-                    session.protocol, utterances, session.format_full_transcript(),
-                )
+            session.protocol = await self.llm.extract_protocol_data(
+                session.protocol, utterances, session.format_full_transcript(),
+            )
             extract_ms = int((time.monotonic() - t0) * 1000)
             logger.info("[PIPELINE] Protocol extraction: %dms", extract_ms)
 

@@ -29,7 +29,7 @@ WORKDIR /app
 COPY app/ ./app/
 
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=10s --start-period=900s --retries=5 \
+HEALTHCHECK --interval=60s --timeout=15s --start-period=1800s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 ENV PYTHONUNBUFFERED=1

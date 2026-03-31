@@ -1,9 +1,13 @@
 """Alignment: match ASR segments with diarization segments.
 
-V3 fix: speaker_map is passed in (stored in session) so it persists across cycles.
+V3 fixes:
+- speaker_map persists in session across cycles
+- verify_speaker_map: checks diarization against calibration zone to prevent role swaps
+- Doctor is ALWAYS the speaker who dominates the first few seconds (calibration zone)
 """
 
 import logging
+from collections import defaultdict
 
 from ..models.messages import Utterance
 from ..services.diarization import DiarizationSegment
@@ -31,15 +35,62 @@ def _find_speaker(
     return best_speaker
 
 
-def _map_speaker_label(raw_label: str, speaker_map: dict[str, str]) -> str:
-    """Map raw pyannote label to doctor/patient. First speaker = doctor."""
-    if raw_label not in speaker_map:
-        if len(speaker_map) == 0:
-            speaker_map[raw_label] = "doctor"
-        else:
-            speaker_map[raw_label] = "patient"
-        logger.info("[ALIGN] Speaker mapping: %s -> %s", raw_label, speaker_map[raw_label])
-    return speaker_map[raw_label]
+def verify_speaker_map(
+    diarization_segments: list[DiarizationSegment],
+    speaker_map: dict[str, str],
+    calibration_end_time: float,
+) -> dict[str, str]:
+    """Verify and fix speaker_map using calibration zone.
+
+    In calibration, the DOCTOR speaks first (asks "What's your name?").
+    So the speaker with the most audio in [0, calibration_end_time] = doctor.
+    If pyannote swapped labels between runs, we detect and fix it here.
+    """
+    if calibration_end_time <= 0 or not diarization_segments:
+        return speaker_map
+
+    # Calculate how much each speaker talks in calibration zone
+    speaker_time: dict[str, float] = defaultdict(float)
+    for seg in diarization_segments:
+        ov = _overlap(seg.start, seg.end, 0.0, calibration_end_time)
+        if ov > 0:
+            speaker_time[seg.speaker] += ov
+
+    if not speaker_time:
+        logger.warning("[ALIGN] No diarization segments in calibration zone [0, %.1f]", calibration_end_time)
+        return speaker_map
+
+    # Doctor = speaker with most time in calibration zone (they ask the first question)
+    doctor_label = max(speaker_time, key=speaker_time.get)
+
+    # Check if current map is correct
+    current_doctor = None
+    for label, role in speaker_map.items():
+        if role == "doctor":
+            current_doctor = label
+            break
+
+    if current_doctor and current_doctor != doctor_label:
+        # Labels swapped! Fix the map
+        old_map = dict(speaker_map)
+        speaker_map.clear()
+        speaker_map[doctor_label] = "doctor"
+        for label in speaker_time:
+            if label != doctor_label:
+                speaker_map[label] = "patient"
+        logger.warning(
+            "[ALIGN] Speaker labels SWAPPED! Fixed: %s → %s (doctor was %s in calibration zone)",
+            old_map, speaker_map, doctor_label,
+        )
+    elif not current_doctor:
+        # First time mapping
+        speaker_map[doctor_label] = "doctor"
+        for label in speaker_time:
+            if label != doctor_label:
+                speaker_map[label] = "patient"
+        logger.info("[ALIGN] Initial speaker map from calibration: %s", speaker_map)
+
+    return speaker_map
 
 
 def align_segments(
@@ -47,13 +98,18 @@ def align_segments(
     diarization_segments: list[DiarizationSegment],
     speaker_map: dict[str, str],
     time_offset: float = 0.0,
+    calibration_end_time: float = 0.0,
 ) -> list[Utterance]:
     """Align ASR with diarization. speaker_map is MUTATED and persisted in session."""
     if not asr_segments:
         return []
 
+    # Verify speaker roles haven't swapped
+    if calibration_end_time > 0:
+        verify_speaker_map(diarization_segments, speaker_map, calibration_end_time)
+
     logger.info(
-        "[ALIGN] %d ASR + %d diar segments, offset=%.1f, existing_map=%s",
+        "[ALIGN] %d ASR + %d diar segments, offset=%.1f, map=%s",
         len(asr_segments), len(diarization_segments), time_offset, speaker_map,
     )
 
@@ -62,7 +118,16 @@ def align_segments(
         abs_start = seg.start + time_offset
         abs_end = seg.end + time_offset
         raw_speaker = _find_speaker(abs_start, abs_end, diarization_segments)
-        speaker = _map_speaker_label(raw_speaker, speaker_map)
+
+        # Map label — if unknown, use calibration-verified map logic
+        if raw_speaker not in speaker_map:
+            if len(speaker_map) == 0:
+                speaker_map[raw_speaker] = "doctor"
+            else:
+                speaker_map[raw_speaker] = "patient"
+            logger.info("[ALIGN] New speaker: %s -> %s", raw_speaker, speaker_map[raw_speaker])
+
+        speaker = speaker_map[raw_speaker]
 
         utterances.append(Utterance(
             speaker=speaker,

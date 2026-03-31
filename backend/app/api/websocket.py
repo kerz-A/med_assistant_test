@@ -6,6 +6,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..config import settings
 from ..core.pipeline import ProcessingPipeline
 from ..core.session import SessionState, SessionStage, session_manager
 from ..models.messages import (
@@ -52,31 +53,17 @@ async def _run_processing_cycle(
             utterances, time_ms = await pipeline.process_cycle(session)
 
         if utterances:
-            session.update_transcript(utterances)
+            # transcript already updated inside pipeline (before extraction)
 
-            # Send transcript
+            # Send transcript to frontend
             await _safe_send(ws, TranscriptUpdate(
                 utterances=utterances, processing_time_ms=time_ms,
             ).model_dump_json())
 
-            # Send protocol update
+            # Send protocol update (fields fill in realtime!)
             await _send_protocol(ws, session)
 
-            # Check calibration complete
-            if session.stage == SessionStage.CALIBRATING and session.speaker_map:
-                pi = session.protocol.patient_info
-                if pi.full_name or pi.age:
-                    session.stage = SessionStage.CALIBRATED
-                    await _safe_send(ws, CalibrationComplete(
-                        patient_info=pi,
-                        message=f"Калибровка завершена. Пациент: {pi.full_name or '?'}, {pi.age or '?'} лет",
-                    ).model_dump_json())
-                    await _safe_send(ws, StatusMessage(
-                        status="calibrated",
-                        message="Калибровка завершена. Нажмите «Запись» для начала приёма.",
-                    ).model_dump_json())
-                    logger.info("[WS] Calibration complete: %s, speakers=%s", pi, session.speaker_map)
-                    return
+            # During calibration — just send updates, doctor presses Stop when ready
 
         # Restore status
         status = "calibrating" if session.stage == SessionStage.CALIBRATING else "recording"
@@ -89,6 +76,13 @@ async def _run_processing_cycle(
         await _safe_send(ws, StatusMessage(status="error", message=str(e)).model_dump_json())
     finally:
         session.release_processing()
+
+        # FIX #2: Catch-up — if more audio accumulated during processing, run again
+        if (session.stage in (SessionStage.CALIBRATING, SessionStage.RECORDING)
+                and session.audio_buffer.unprocessed_duration >= settings.processing_interval_seconds):
+            logger.info("[WS] Catch-up: %.1fs unprocessed, starting next cycle",
+                        session.audio_buffer.unprocessed_duration)
+            asyncio.create_task(_run_processing_cycle(ws, session, pipeline))
 
 
 def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
@@ -143,19 +137,36 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 # ---- STOP CALIBRATION ----
                 elif msg.type == ClientMessageType.STOP_CALIBRATION and session:
                     if session.stage == SessionStage.CALIBRATING:
-                        # Force process remaining audio
+                        # Process ALL remaining audio
                         if session.audio_buffer.unprocessed_duration > 0.5:
                             await _run_processing_cycle(ws, session, pipeline)
                         if not session.speaker_map:
-                            # Calibration didn't detect speakers — default mapping
                             session.speaker_map = {"SPEAKER_00": "doctor", "SPEAKER_01": "patient"}
-                            logger.warning("[WS] Calibration: no speakers detected, using defaults")
+                            logger.warning("[WS] Calibration: no speakers, using defaults")
+
+                        # Re-extract patient info from FULL transcript (not just last chunk)
+                        patient_texts = [u.text for u in session.transcript if u.speaker == "patient"]
+                        if patient_texts:
+                            from ..services.llm import LLMService
+                            combined = " ".join(patient_texts)
+                            logger.info("[WS] Calibration: extracting from full text: %s", combined[:100])
+                            info = await pipeline.llm.extract_patient_info(combined)
+                            if info.get("full_name"):
+                                session.protocol.patient_info.full_name = info["full_name"]
+                            if info.get("age"):
+                                session.protocol.patient_info.age = info["age"]
+                            if info.get("gender"):
+                                session.protocol.patient_info.gender = info["gender"]
+
+                        session.calibration_end_time = session.audio_buffer.total_duration
+                        logger.info("[WS] Calibration end: %.1fs, patient=%s", session.calibration_end_time, session.protocol.patient_info)
                         session.stage = SessionStage.CALIBRATED
                         pi = session.protocol.patient_info
                         await _safe_send(ws, CalibrationComplete(
                             patient_info=pi,
-                            message=f"Калибровка завершена. Пациент: {pi.full_name or '?'}",
+                            message=f"Калибровка завершена. Пациент: {pi.full_name or '?'}, {pi.age or '?'} лет, {pi.gender or '?'}",
                         ).model_dump_json())
+                        await _send_protocol(ws, session)
                         await _safe_send(ws, StatusMessage(
                             status="calibrated",
                             message="Нажмите «Запись» для начала приёма.",

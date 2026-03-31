@@ -1,12 +1,10 @@
 services:
-  frontend:
-    build:
-      context: ./frontend
+  ollama:
+    image: ollama/ollama:latest
     ports:
-      - "3000:80"
-    depends_on:
-      backend:
-        condition: service_healthy
+      - "11434:11434"
+    volumes:
+      - ./.cache/ollama:/root/.ollama
     networks:
       - app-network
 
@@ -20,14 +18,17 @@ services:
     volumes:
       - ./.cache/huggingface:/root/.cache/huggingface
       - ./.cache/faster_whisper:/root/.cache/faster_whisper
-    # GPU: uncomment for NVIDIA GPU
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     networks:
       - app-network
 

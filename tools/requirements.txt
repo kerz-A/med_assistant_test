@@ -1,0 +1,4 @@
+# Tools for testing
+edge-tts
+imageio-ffmpeg
+websockets
