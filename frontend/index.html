@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Протокол осмотра — Realtime</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <h1>Протокол осмотра врача</h1>
+      <span class="header-sub">v3 — Realtime заполнение</span>
+    </div>
+    <div class="header-right">
+      <div id="patient-info" class="patient-info"></div>
+      <span id="connection-status" class="status-indicator status-disconnected">
+        <span class="status-dot"></span>
+        <span class="status-text">Отключено</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <div id="stage-label" class="stage-label">Готов к работе</div>
+
+    <div id="calibration-hint" class="calibration-hint">
+      Спросите пациента: <strong>«Как вас зовут? Сколько вам полных лет? Ваш пол?»</strong>
+    </div>
+
+    <div class="controls-bar">
+      <button id="btn-calibrate" class="btn btn-calibrate" disabled>🎯 Калибровка</button>
+      <button id="btn-stop-calibrate" class="btn btn-stop-cal hidden" disabled>⏹ Завершить калибровку</button>
+      <button id="btn-record" class="btn btn-record hidden" disabled>🔴 Запись</button>
+      <button id="btn-stop" class="btn btn-stop hidden" disabled>⏹ Стоп</button>
+      <button id="btn-finalize" class="btn btn-finalize hidden" disabled>✅ Сформировать заключение</button>
+      <span id="timer" class="timer"></span>
+      <div id="processing-indicator" class="processing-indicator">
+        <div class="spinner"></div><span>Обработка...</span>
+      </div>
+    </div>
+
+    <div class="two-columns">
+      <section class="panel">
+        <h2 class="panel-title">Транскрипция разговора</h2>
+        <div id="transcript-container" class="transcript-container">
+          <p class="placeholder">Нажмите «Калибровка» для начала...</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Протокол осмотра</h2>
+        <div id="protocol-container" class="protocol-container"></div>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
