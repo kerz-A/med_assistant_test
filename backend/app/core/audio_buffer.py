@@ -18,6 +18,11 @@ class AudioRingBuffer:
         return min(self._total_written, self._max_samples) / SAMPLE_RATE
 
     @property
+    def real_total_duration(self) -> float:
+        """Real elapsed session time, not capped by buffer size."""
+        return self._total_written / SAMPLE_RATE
+
+    @property
     def unprocessed_duration(self) -> float:
         return (self._total_written - self._last_processed_pos) / SAMPLE_RATE
 
@@ -65,6 +70,24 @@ class AudioRingBuffer:
         full = self.get_full_audio()
         n = min(unprocessed_samples, len(full))
         return full[-n:]
+
+    def get_unprocessed_audio_with_overlap(self, overlap_seconds: float = 2.0) -> tuple[np.ndarray, float]:
+        """Get unprocessed audio plus context from the end of the previous chunk.
+
+        Returns (audio_with_overlap, overlap_duration_seconds).
+        overlap_duration = how many seconds at the start are context from the previous chunk.
+        """
+        unprocessed_samples = self._total_written - self._last_processed_pos
+        if unprocessed_samples <= 0:
+            return np.zeros(0, dtype=np.float32), 0.0
+
+        overlap_samples = int(overlap_seconds * SAMPLE_RATE)
+        actual_overlap = min(overlap_samples, self._last_processed_pos)
+        total_needed = unprocessed_samples + actual_overlap
+
+        full = self.get_full_audio()
+        n = min(total_needed, len(full))
+        return full[-n:], actual_overlap / SAMPLE_RATE
 
     def mark_processed(self) -> None:
         self._last_processed_pos = self._total_written

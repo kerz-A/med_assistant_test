@@ -19,64 +19,93 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 MEDICAL_CORRECTION_PROMPT = """\
-Исправь ошибки распознавания речи в медицинских терминах и названиях лекарств.
+Исправь ошибки распознавания речи (ASR) в медицинских терминах и названиях лекарств.
+
 Примеры: нурофон→нурофен, парацетомол→парацетамол, ибопрофен→ибупрофен, \
-гастрид→гастрит, гипертания→гипертония, диобед→диабет, тохикардия→тахикардия.
+гастрид→гастрит, гипертания→гипертония, диобед→диабет, тохикардия→тахикардия, \
+амоксицилин→амоксициллин, холицистит→холецистит, панкратит→панкреатит, \
+кординол→кардиология, мезентерий→мезентерий, апатия→апатия.
+
 НЕ меняй смысл. НЕ перефразируй. Числа оставь как есть.
-Если текст содержит несколько фрагментов через " ||| " — исправь каждый отдельно, сохраняя разделитель.
-Ответь ТОЛЬКО исправленным текстом, без пояснений."""
+
+Вход: {"items": ["текст 1", "текст 2"]}
+Выход: {"items": ["исправленный 1", "исправленный 2"]}
+
+Ответь ТОЛЬКО валидным JSON."""
 
 CALIBRATION_PROMPT = """\
-Из текста извлеки данные пациента: ФИО, возраст (число) и пол.
-Ответь СТРОГО в формате JSON, без другого текста:
-{{"full_name": "Фамилия Имя Отчество", "age": 45, "gender": "Ж"}}
-Если данных нет — используй null. Пол: "М" для мужского, "Ж" для женского."""
+Из текста пациента извлеки: ФИО, возраст (число), пол.
 
-EXTRACTION_PROMPT = """\
-Ты — квалифицированный врач, заполняющий медицинскую карту пациента \
-на основе разговора врача и пациента.
+═══ ПРИМЕРЫ ═══
+Текст: "Меня зовут Иванова Мария Петровна. Мне сорок пять лет. Женский."
+→ {{"full_name": "Иванова Мария Петровна", "age": 45, "gender": "Ж"}}
+
+Текст: "Петров Алексей, тридцать восемь, мужчина"
+→ {{"full_name": "Петров Алексей", "age": 38, "gender": "М"}}
+
+Текст: "Зовут Ольга Сергеевна"
+→ {{"full_name": "Ольга Сергеевна", "age": null, "gender": null}}
 
 ═══ ПРАВИЛА ═══
-1. Извлекай данные ТОЛЬКО из реплик ПАЦИЕНТА. Реплики врача — контекст.
-2. НЕ выдумывай данные. Записывай только то, что пациент явно сказал.
-3. Сохраняй ранее заполненные поля — НЕ удаляй и НЕ обнуляй.
-4. Исправляй ошибки ASR: нурофон→нурофен, ибопрофен→ибупрофен.
+1. age — ТОЛЬКО целое число. "Сорок пять" → 45, "тридцать два" → 32
+2. gender: мужской/мужчина → "М", женский/женщина → "Ж", неизвестно → null
+3. full_name — как пациент назвал (ФИО, ИО, Ф — что дали)
+4. Если данных нет — null
 
-═══ МЕДИЦИНСКИЙ СТИЛЬ ═══
-- Используй мед. терминологию: "Цефалгия (головная боль) в височной области, 6/10 по ВАШ"
-- Лекарства: МНН (торговое), дозировка. Пример: "Ибупрофен (Нурофен) 400 мг"
-- Давление: строка "130/85", НЕ число.
+Ответь СТРОГО JSON: {{"full_name": "...", "age": число|null, "gender": "М"|"Ж"|null}}"""
 
-═══ СТРОГОЕ РАЗДЕЛЕНИЕ ═══
-- complaints — ТОЛЬКО жалобы САМОГО пациента (основная причина обращения)
-- complaints_details — детали жалоб: локализация, характер, интенсивность
-- anamnesis — история ТЕКУЩЕГО заболевания пациента
-- life_anamnesis — хронические болезни пациента + привычки + "Наследственный анамнез: мать — ..., отец — ..."
-- allergies — аллергии САМОГО пациента
-- medications — лекарства САМОГО пациента
-НИКОГДА не записывай болезни родственников в complaints или anamnesis!
+EXTRACTION_PROMPT = """\
+Ты — опытный врач, заполняющий медкарту по разговору с пациентом.
 
-Ответь СТРОГО в JSON (ТОЛЬКО на русском языке):
+═══ ПРАВИЛА ═══
+1. Извлекай ТОЛЬКО из реплик ПАЦИЕНТА (реплики врача — контекст)
+2. НЕ выдумывай данных
+3. Сохраняй ранее заполненные поля — НЕ удаляй и НЕ обнуляй
+4. Исправляй ASR: нурофон→нурофен, гастрид→гастрит, диобед→диабет
+
+═══ ЧИСЛА ═══
+Пациент говорит словами — преобразуй в цифры:
+- "сто тридцать на восемьдесят пять" → systolic_bp: "130/85"
+- "сто семьдесят восемь сантиметров" → height_cm: 178
+- "восемьдесят два килограмма" → weight_kg: 82
+- "семьдесят два удара" → pulse: 72
+
+═══ РАЗДЕЛЕНИЕ ПОЛЕЙ (СТРОГО) ═══
+- complaints: ГЛАВНАЯ жалоба ("головная боль")
+- complaints_details: детали — локализация, ВАШ, характер, когда усиливается
+  Стиль: "Цефалгия (головная боль) в височной области, 6-7/10 по ВАШ, усиливается к вечеру и при длительном сидении"
+- anamnesis: история ТЕКУЩЕГО заболевания ("началось 2 недели назад после простуды")
+- life_anamnesis: хронические болезни + привычки + семейный анамнез
+  Пример: "стоит на учёте лет 5, аллергия на амоксициллин, не курю, сплю плохо, стресс на работе"
+  ВКЛЮЧИТЬ сюда семью: "Наследственный анамнез: мать — гипертония, диабет; отец — инфаркт в 55 лет"
+- allergies: аллергии ТОЛЬКО пациента ("Амоксициллин — сыпь")
+- medications: лекарства ТОЛЬКО пациента ("Ибупрофен (Нурофен) 400 мг")
+
+ЗАПРЕЩЕНО: болезни родственников в complaints / anamnesis!
+
+═══ ОТРИЦАНИЯ ═══
+- "не аллергик" → allergies: "Отрицает"
+- "лекарств не принимаю" → medications: "Не принимает"
+
+Ответь СТРОГО JSON:
 {{
   "exam_data": {{
-    "complaints": "строка или null",
-    "complaints_details": "строка или null",
-    "anamnesis": "строка или null",
-    "life_anamnesis": "строка или null",
-    "allergies": "строка или null",
-    "medications": "строка или null"
+    "complaints": "строка|null",
+    "complaints_details": "строка|null",
+    "anamnesis": "строка|null",
+    "life_anamnesis": "строка|null",
+    "allergies": "строка|null",
+    "medications": "строка|null"
   }},
   "vitals": {{
-    "height_cm": null,
-    "weight_kg": null,
-    "pulse": null,
-    "spo2": null,
-    "systolic_bp": null
+    "height_cm": число|null, "weight_kg": число|null,
+    "pulse": число|null, "spo2": число|null,
+    "systolic_bp": "строка NNN/NN|null"
   }}
 }}"""
 
 FINALIZATION_PROMPT = """\
-Ты — квалифицированный врач. На основе собранного анамнеза сформируй заключение.
+Ты — опытный врач. Сформируй заключение на основе данных пациента и разговора.
 Отвечай ТОЛЬКО на русском языке.
 
 ═══ ДАННЫЕ ПАЦИЕНТА ═══
@@ -86,27 +115,39 @@ FINALIZATION_PROMPT = """\
 {transcript}
 
 ═══ ТРЕБОВАНИЯ ═══
-1. ДИАГНОЗ: предварительный, с кодом МКБ-10. Дифференциальный ряд если неоднозначно.
-2. ПЛАН ЛЕЧЕНИЯ: конкретные обследования (ОАК, БАК, ЭКГ), препараты с дозировками, консультации специалистов.
-3. РЕКОМЕНДАЦИИ: простым языком для пациента, тревожные симптомы (red flags).
+1. ДИАГНОЗ: "Предварительный диагноз: [МКБ-10 код] Название"
+   Пример: "R51 Цефалгия напряжённого типа. Дифф. диагноз: G43 Мигрень"
 
-Ранее заполненные поля перепиши в корректном медицинском стиле, сохраняя все данные.
+2. ПЛАН ЛЕЧЕНИЯ:
+   - Обследования: ОАК, БАК, ЭКГ (с обоснованием)
+   - Лекарства: МНН (торговое) доза × кратность, длительность
+   - Консультации: какие специалисты, срочность
 
-Ответь СТРОГО в JSON (на русском):
+3. РЕКОМЕНДАЦИИ ПАЦИЕНТУ (простым языком):
+   - Что делать и что не делать
+   - RED FLAGS: "Немедленно к врачу если: [конкретные симптомы]"
+   - Когда повторный осмотр
+
+═══ ПРАВИЛА ═══
+- Перепиши ранее заполненные поля в корректном медицинском стиле, НЕ теряя данных
+- МКБ-10: буква + 2 цифры (R51, I10, G43 и т.д.)
+
+Ответь СТРОГО в JSON:
 {{
   "exam_data": {{
     "complaints": "мед. стиль",
     "complaints_details": "мед. стиль, подробно",
     "anamnesis": "мед. стиль",
     "life_anamnesis": "мед. стиль",
-    "allergies": "строка",
-    "medications": "МНН (торговое), дозировка",
-    "diagnosis": "Предварительный: код МКБ-10 Название",
-    "treatment_plan": "конкретный план",
-    "patient_recommendations": "простым языком"
+    "allergies": "как есть",
+    "medications": "МНН (торговое), дозы",
+    "diagnosis": "Предварительный: МКБ-10 Название",
+    "treatment_plan": "Обследования: ...\\nЛекарства: ...\\nКонсультации: ...",
+    "patient_recommendations": "Простым языком. RED FLAGS: ..."
   }},
   "vitals": {{
-    "height_cm": число, "weight_kg": число, "pulse": число, "spo2": число, "systolic_bp": "строка 120/80"
+    "height_cm": число, "weight_kg": число, "pulse": число,
+    "spo2": число, "systolic_bp": "строка"
   }}
 }}"""
 
@@ -199,20 +240,31 @@ class LLMService:
         resp.raise_for_status()
         return ""
 
-    # ---- Medical correction ----
+    # ---- Medical correction (JSON-based, not separator-based) ----
 
-    async def correct_medical_terms(self, text: str) -> str:
+    async def correct_medical_terms_batch(self, texts: list[str]) -> list[str] | None:
+        """Correct medical terms in a batch of texts. Returns corrected list or None on failure."""
         try:
-            corrected = await self._chat(MEDICAL_CORRECTION_PROMPT, text, json_mode=False)
-            if corrected and len(corrected) > 3:
-                corrected = corrected.strip('"\'')
-                if corrected != text:
-                    logger.info("[LLM] Corrected: '%s' → '%s'", text[:50], corrected[:50])
-                return corrected
-            return text
+            payload = json.dumps({"items": texts}, ensure_ascii=False)
+            raw = await self._chat(MEDICAL_CORRECTION_PROMPT, payload, json_mode=True)
+            parsed = self._parse_json(raw)
+            if parsed and "items" in parsed and isinstance(parsed["items"], list):
+                corrected = parsed["items"]
+                if len(corrected) == len(texts):
+                    for i, (orig, corr) in enumerate(zip(texts, corrected)):
+                        if orig != corr:
+                            logger.info("[LLM] Corrected[%d]: '%s' → '%s'", i, orig[:50], corr[:50])
+                    return corrected
+                logger.warning("[LLM] Correction count mismatch: got %d, expected %d", len(corrected), len(texts))
+            return None
         except Exception as e:
             logger.warning("[LLM] Correction failed: %s", e)
-            return text
+            return None
+
+    # Keep old method for backward compatibility but deprecated
+    async def correct_medical_terms(self, text: str) -> str:
+        result = await self.correct_medical_terms_batch([text])
+        return result[0] if result else text
 
     # ---- Calibration ----
 
@@ -235,7 +287,7 @@ class LLMService:
     # ---- Protocol extraction (every cycle during recording) ----
 
     async def extract_protocol_data(
-        self, current: MedicalProtocol, utterances: list[Utterance], full_transcript: str,
+        self, current: MedicalProtocol, utterances: list[Utterance], context: str,
     ) -> MedicalProtocol:
         new_text = "\n".join(
             f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
@@ -243,9 +295,9 @@ class LLMService:
         )
         user_prompt = (
             f"ТЕКУЩИЙ ПРОТОКОЛ:\n{current.model_dump_json(indent=2)}\n\n"
-            f"ПОЛНАЯ ИСТОРИЯ РАЗГОВОРА (для контекста):\n{full_transcript}\n\n"
+            f"КОНТЕКСТ (последние реплики):\n{context}\n\n"
             f"НОВЫЙ ФРАГМЕНТ (извлеки данные отсюда):\n{new_text}\n\n"
-            "Извлеки данные из реплик ПАЦИЕНТА. Сохраняй ранее заполненные поля."
+            "Извлеки данные из реплик ПАЦИЕНТА. Сохрани заполненные поля."
         )
         try:
             raw = await self._chat(EXTRACTION_PROMPT, user_prompt)
@@ -304,23 +356,53 @@ class LLMService:
             updated = fallback.model_copy(deep=True)
             if "exam_data" in parsed:
                 for field, value in parsed["exam_data"].items():
-                    if value and hasattr(updated.exam_data, field):
+                    if not hasattr(updated.exam_data, field):
+                        continue
+                    current_val = getattr(updated.exam_data, field, None)
+                    new_val = None
+                    if value:
                         if isinstance(value, dict):
-                            value = "; ".join(f"{k}: {v}" for k, v in value.items() if v)
+                            new_val = "; ".join(f"{k}: {v}" for k, v in value.items() if v)
                         elif isinstance(value, list):
-                            value = "; ".join(str(v) for v in value)
-                        setattr(updated.exam_data, field, str(value))
+                            new_val = "; ".join(str(v) for v in value)
+                        else:
+                            new_val = str(value).strip()
+
+                    if not new_val:
+                        continue  # Don't overwrite existing data with empty
+
+                    # For medications/allergies: append if new info, don't replace
+                    if current_val and field in ("medications", "allergies") and new_val not in current_val:
+                        setattr(updated.exam_data, field, f"{current_val}; {new_val}")
+                    else:
+                        setattr(updated.exam_data, field, new_val)
+
             if "vitals" in parsed:
                 for field, value in parsed["vitals"].items():
-                    if value is not None and hasattr(updated.vitals, field):
-                        if field in ("height_cm", "weight_kg", "bmi", "pulse", "spo2"):
-                            try:
-                                value = float(str(value).replace(",", "."))
-                            except (ValueError, TypeError):
+                    if value is None or not hasattr(updated.vitals, field):
+                        continue
+                    if field in ("height_cm", "weight_kg", "bmi", "pulse", "spo2"):
+                        try:
+                            num = float(str(value).replace(",", "."))
+                            # Sanity checks
+                            if field == "height_cm" and not (50 < num < 250):
                                 continue
-                        elif field == "systolic_bp":
-                            value = str(value)  # Always string for BP
-                        setattr(updated.vitals, field, value)
+                            if field == "weight_kg" and not (2 < num < 300):
+                                continue
+                            if field == "pulse" and not (30 < num < 250):
+                                continue
+                            if field == "spo2" and not (50 < num < 101):
+                                continue
+                            setattr(updated.vitals, field, num)
+                        except (ValueError, TypeError):
+                            logger.warning("[LLM] Failed to parse %s: %s", field, value)
+                            continue
+                    elif field == "systolic_bp":
+                        bp = str(value).strip()
+                        if re.match(r"^\d{2,3}/\d{2,3}$", bp):
+                            setattr(updated.vitals, field, bp)
+                        else:
+                            logger.warning("[LLM] Invalid BP format: %s", value)
             # Auto BMI
             if updated.vitals.height_cm and updated.vitals.weight_kg:
                 h = updated.vitals.height_cm / 100

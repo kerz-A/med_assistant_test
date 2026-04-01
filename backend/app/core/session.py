@@ -35,6 +35,7 @@ class SessionState:
         self.sequence = 0
         self.is_processing = False
         self._lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task] = set()
         # FIX #1: Track calibration zone for stable speaker mapping
         self.calibration_end_time: float = 0.0  # seconds of audio when calibration ended
         self.doctor_raw_label: str | None = None  # pyannote label of doctor from calibration
@@ -59,6 +60,26 @@ class SessionState:
 
     def release_processing(self) -> None:
         self.is_processing = False
+
+    async def wait_for_processing_complete(self, timeout: float = 30.0) -> bool:
+        """Wait until any in-flight processing completes."""
+        for _ in range(int(timeout * 10)):
+            if not self.is_processing:
+                return True
+            await asyncio.sleep(0.1)
+        logger.warning("[SESSION] Timed out waiting for processing to complete (%.1fs)", timeout)
+        return False
+
+    def track_task(self, task: asyncio.Task) -> None:
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def cancel_all_tasks(self) -> None:
+        for t in self._tasks:
+            t.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
 
     def update_transcript(self, new_utterances: list[Utterance]) -> None:
         self.transcript.extend(new_utterances)

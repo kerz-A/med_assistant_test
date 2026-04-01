@@ -53,8 +53,6 @@ async def _run_processing_cycle(
             utterances, time_ms = await pipeline.process_cycle(session)
 
         if utterances:
-            # transcript already updated inside pipeline (before extraction)
-
             # Send transcript to frontend
             await _safe_send(ws, TranscriptUpdate(
                 utterances=utterances, processing_time_ms=time_ms,
@@ -62,8 +60,6 @@ async def _run_processing_cycle(
 
             # Send protocol update (fields fill in realtime!)
             await _send_protocol(ws, session)
-
-            # During calibration — just send updates, doctor presses Stop when ready
 
         # Restore status
         status = "calibrating" if session.stage == SessionStage.CALIBRATING else "recording"
@@ -77,12 +73,13 @@ async def _run_processing_cycle(
     finally:
         session.release_processing()
 
-        # FIX #2: Catch-up — if more audio accumulated during processing, run again
+        # Catch-up — if more audio accumulated during processing, run again
         if (session.stage in (SessionStage.CALIBRATING, SessionStage.RECORDING)
                 and session.audio_buffer.unprocessed_duration >= settings.processing_interval_seconds):
             logger.info("[WS] Catch-up: %.1fs unprocessed, starting next cycle",
                         session.audio_buffer.unprocessed_duration)
-            asyncio.create_task(_run_processing_cycle(ws, session, pipeline))
+            task = asyncio.create_task(_run_processing_cycle(ws, session, pipeline))
+            session.track_task(task)
 
 
 def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
@@ -107,7 +104,8 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                     if session.stage in (SessionStage.CALIBRATING, SessionStage.RECORDING):
                         session.add_audio(message["bytes"])
                         if session.should_process():
-                            asyncio.create_task(_run_processing_cycle(ws, session, pipeline))
+                            task = asyncio.create_task(_run_processing_cycle(ws, session, pipeline))
+                            session.track_task(task)
                     continue
 
                 # Text messages
@@ -137,9 +135,13 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 # ---- STOP CALIBRATION ----
                 elif msg.type == ClientMessageType.STOP_CALIBRATION and session:
                     if session.stage == SessionStage.CALIBRATING:
+                        # Wait for any in-flight processing to finish
+                        await session.wait_for_processing_complete(timeout=15.0)
+
                         # Process ALL remaining audio
                         if session.audio_buffer.unprocessed_duration > 0.5:
                             await _run_processing_cycle(ws, session, pipeline)
+
                         if not session.speaker_map:
                             session.speaker_map = {"SPEAKER_00": "doctor", "SPEAKER_01": "patient"}
                             logger.warning("[WS] Calibration: no speakers, using defaults")
@@ -147,7 +149,6 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                         # Re-extract patient info from FULL transcript (not just last chunk)
                         patient_texts = [u.text for u in session.transcript if u.speaker == "patient"]
                         if patient_texts:
-                            from ..services.llm import LLMService
                             combined = " ".join(patient_texts)
                             logger.info("[WS] Calibration: extracting from full text: %s", combined[:100])
                             info = await pipeline.llm.extract_patient_info(combined)
@@ -158,7 +159,7 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                             if info.get("gender"):
                                 session.protocol.patient_info.gender = info["gender"]
 
-                        session.calibration_end_time = session.audio_buffer.total_duration
+                        session.calibration_end_time = session.audio_buffer.real_total_duration
                         logger.info("[WS] Calibration end: %.1fs, patient=%s", session.calibration_end_time, session.protocol.patient_info)
                         session.stage = SessionStage.CALIBRATED
                         pi = session.protocol.patient_info
@@ -183,9 +184,13 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 # ---- STAGE 3: STOP RECORDING ----
                 elif msg.type == ClientMessageType.STOP_RECORDING and session:
                     if session.stage == SessionStage.RECORDING:
+                        # Wait for any in-flight processing to finish
+                        await session.wait_for_processing_complete(timeout=15.0)
+
                         # Process remaining audio
                         if session.audio_buffer.unprocessed_duration > 0.5:
                             await _run_processing_cycle(ws, session, pipeline)
+
                         session.stage = SessionStage.STOPPED
                         await _safe_send(ws, StatusMessage(
                             status="stopped",
@@ -193,7 +198,7 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                         ).model_dump_json())
                         await _send_protocol(ws, session)
                         logger.info("[WS] Recording stopped: session=%s duration=%.1fs",
-                                    session.session_id, session.audio_buffer.total_duration)
+                                    session.session_id, session.audio_buffer.real_total_duration)
 
                 # ---- STAGE 4: FINALIZE ----
                 elif msg.type == ClientMessageType.FINALIZE and session:
@@ -233,6 +238,7 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
         finally:
             if session:
                 logger.info("[WS] Cleanup: session=%s stage=%s", session.session_id, session.stage.value)
+                await session.cancel_all_tasks()
                 session_manager.remove_session(session.session_id)
 
     return ws_router
