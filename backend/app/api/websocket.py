@@ -1,19 +1,20 @@
-"""WebSocket handler v4.1: VAD-driven segmentation + speaker embeddings.
+"""WebSocket handler v4.2: VAD-driven segmentation + speaker embeddings.
 
-Calibration: collect VAD segments during streaming, process sequentially at stop.
-Recording: fire-and-forget tasks per VAD segment, batched LLM extraction.
+Calibration: collect VAD segments → merge into speaker turns → process sequentially.
+Recording: fire-and-forget tasks with error handling + ASR fallback.
 """
 
 import asyncio
 import json
 import logging
 
+import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..config import settings
 from ..core.pipeline import ProcessingPipeline
 from ..core.session import SessionState, SessionStage, session_manager
-from ..core.vad_segmenter import VADSegmenter, SpeechSegment
+from ..core.vad_segmenter import VADSegmenter, SpeechSegment, SAMPLE_RATE
 from ..models.messages import (
     CalibrationComplete,
     ClientMessage,
@@ -21,6 +22,7 @@ from ..models.messages import (
     ProtocolUpdateMessage,
     StatusMessage,
     TranscriptUpdate,
+    Utterance,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,38 @@ async def _send_protocol(ws: WebSocket, session: SessionState) -> None:
     await _safe_send(ws, msg.model_dump_json())
 
 
+def _merge_segments_into_turns(segments: list[SpeechSegment], max_gap_s: float = 1.5) -> list[SpeechSegment]:
+    """Merge consecutive VAD segments with short gaps into speaker turns.
+
+    If gap between two segments < max_gap_s, they're from the same speaker.
+    The silence between them is filled with zeros (silence).
+    """
+    if not segments:
+        return []
+
+    turns: list[SpeechSegment] = []
+    current = segments[0]
+
+    for seg in segments[1:]:
+        gap = seg.start_time - current.end_time
+        if gap < max_gap_s:
+            # Same speaker turn — merge with silence fill
+            gap_samples = int(gap * SAMPLE_RATE)
+            silence = np.zeros(max(gap_samples, 0), dtype=np.float32)
+            current = SpeechSegment(
+                audio=np.concatenate([current.audio, silence, seg.audio]),
+                start_time=current.start_time,
+                end_time=seg.end_time,
+            )
+        else:
+            # New speaker turn
+            turns.append(current)
+            current = seg
+
+    turns.append(current)
+    return turns
+
+
 def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
     ws_router = APIRouter()
 
@@ -58,16 +92,40 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
             if session is None or session.stage != SessionStage.RECORDING:
                 return
 
-            await _safe_send(ws, StatusMessage(status="processing").model_dump_json())
+            try:
+                await _safe_send(ws, StatusMessage(status="processing").model_dump_json())
 
-            utterances = await pipeline.process_segment(session, segment)
-            if utterances:
-                await _safe_send(ws, TranscriptUpdate(
-                    utterances=utterances, processing_time_ms=0,
-                ).model_dump_json())
-                await _send_protocol(ws, session)
+                utterances = await pipeline.process_segment(session, segment)
+                if utterances:
+                    await _safe_send(ws, TranscriptUpdate(
+                        utterances=utterances, processing_time_ms=0,
+                    ).model_dump_json())
+                    await _send_protocol(ws, session)
 
-            await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
+                await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
+
+            except Exception as e:
+                logger.exception("[WS] Recording segment error: %s", e)
+                # Fallback: try ASR only, preserve text as "unknown" speaker
+                try:
+                    asr_segs = await pipeline.transcription.transcribe(segment.audio)
+                    text = " ".join(s.text.strip() for s in asr_segs if s.text.strip())
+                    if text:
+                        utterance = Utterance(
+                            speaker="unknown", text=text,
+                            start=round(segment.start_time, 2),
+                            end=round(segment.end_time, 2),
+                        )
+                        session.transcript.append(utterance)
+                        session.sequence += 1
+                        await _safe_send(ws, TranscriptUpdate(
+                            utterances=[utterance], processing_time_ms=0,
+                        ).model_dump_json())
+                        logger.info("[WS] ASR fallback: '%s'", text[:60])
+                except Exception:
+                    logger.exception("[WS] ASR fallback also failed for segment %.1f-%.1fs",
+                                     segment.start_time, segment.end_time)
+                await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
 
         try:
             while True:
@@ -84,10 +142,8 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
 
                         for seg in segments:
                             if session.stage == SessionStage.CALIBRATING:
-                                # Buffer for deferred processing at stop_calibration
                                 session.buffer_calibration_segment(seg)
                             elif session.stage == SessionStage.RECORDING:
-                                # Fire-and-forget for realtime results
                                 task = asyncio.create_task(on_recording_segment(seg))
                                 session.track_task(task)
                     continue
@@ -132,35 +188,37 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                         if final_seg:
                             session.buffer_calibration_segment(final_seg)
 
-                        # Process ALL buffered segments SEQUENTIALLY
+                        # Merge VAD segments into speaker turns (gap > 1.5s = new speaker)
                         cal_segments = session.get_calibration_segments()
-                        logger.info("[WS] Processing %d calibration segments sequentially",
-                                    len(cal_segments))
+                        turns = _merge_segments_into_turns(cal_segments, max_gap_s=1.5)
+                        logger.info("[WS] Calibration: %d VAD segments → %d speaker turns",
+                                    len(cal_segments), len(turns))
 
-                        for seg in cal_segments:
-                            utterances = await pipeline.process_calibration_segment(session, seg)
+                        # Process turns sequentially (turn 1 = doctor, turn 2 = patient)
+                        for turn in turns:
+                            utterances = await pipeline.process_calibration_segment(session, turn)
                             if utterances:
                                 await _safe_send(ws, TranscriptUpdate(
                                     utterances=utterances, processing_time_ms=0,
                                 ).model_dump_json())
 
-                        # Finalize: extract patient info from completed transcript
+                        # Finalize: extract patient info
                         await pipeline.finalize_calibration(session)
 
-                        # Validate calibration results
+                        # Validate
                         if session.doctor_profile.count == 0 and session.patient_profile.count == 0:
                             logger.error("[WS] Calibration failed: no speech detected")
                             await _safe_send(ws, StatusMessage(
                                 status="error",
-                                message="Калибровка не удалась: речь не обнаружена. Попробуйте снова.",
+                                message="Калибровка не удалась: речь не обнаружена.",
                             ).model_dump_json())
                             session.stage = SessionStage.IDLE
                             continue
 
                         if session.doctor_profile.count == 0:
-                            logger.warning("[WS] No doctor segments during calibration")
+                            logger.warning("[WS] No doctor detected")
                         if session.patient_profile.count == 0:
-                            logger.warning("[WS] No patient segments during calibration")
+                            logger.warning("[WS] No patient detected")
 
                         session.calibration_end_time = session.audio_buffer.real_total_duration
                         session.stage = SessionStage.CALIBRATED
@@ -177,18 +235,18 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                         ).model_dump_json())
 
                         logger.info(
-                            "[WS] Calibration done: patient=%s, doctor_embs=%d, patient_embs=%d",
+                            "[WS] Calibration done: patient=%s, doctor_embs=%d, patient_embs=%d, turns=%d",
                             session.protocol.patient_info.full_name,
                             session.doctor_profile.count,
                             session.patient_profile.count,
+                            len(turns),
                         )
 
                 # ---- STAGE 2: START RECORDING ----
                 elif msg.type == ClientMessageType.START_RECORDING and session and vad:
                     if session.stage == SessionStage.CALIBRATED:
                         session.stage = SessionStage.RECORDING
-                        # Clear any leftover calibration data, reset VAD
-                        session.get_calibration_segments()
+                        session.get_calibration_segments()  # clear leftovers
                         vad.reset()
                         await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
                         logger.info("[WS] Recording started: session=%s", session.session_id)

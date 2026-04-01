@@ -84,6 +84,11 @@ class SpeakerIDService:
         if self._model is None:
             raise RuntimeError("Speaker ID model not loaded")
 
+        # Minimum audio length for ECAPA-TDNN (~250ms at 16kHz)
+        if len(audio) < 4000:
+            logger.warning("[SPEAKER_ID] Audio too short (%d samples), returning zero embedding", len(audio))
+            return np.zeros(192, dtype=np.float32)
+
         # SpeechBrain expects [batch, time] tensor
         waveform = torch.tensor(audio, dtype=torch.float32).unsqueeze(0)
 
