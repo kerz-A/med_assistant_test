@@ -126,7 +126,7 @@ async def run(args):
     if args.exam_wav:
         validate_wav(args.exam_wav)
 
-    async with websockets.connect(url) as ws:
+    async with websockets.connect(url, ping_interval=60, ping_timeout=120) as ws:
 
         # ---- STAGE 1: CALIBRATION ----
         if not args.no_calibration and args.calibration_wav:

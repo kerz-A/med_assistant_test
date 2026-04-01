@@ -33,4 +33,4 @@ HEALTHCHECK --interval=60s --timeout=15s --start-period=1800s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 ENV PYTHONUNBUFFERED=1
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--ws-ping-interval", "60", "--ws-ping-timeout", "60"]

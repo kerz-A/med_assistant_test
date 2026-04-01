@@ -47,23 +47,15 @@ async def _run_processing_cycle(
     try:
         await _safe_send(ws, StatusMessage(status="processing").model_dump_json())
 
-        if session.stage == SessionStage.CALIBRATING:
-            utterances, time_ms = await pipeline.process_calibration(session)
-        else:
-            utterances, time_ms = await pipeline.process_cycle(session)
+        utterances, time_ms = await pipeline.process_cycle(session)
 
         if utterances:
-            # Send transcript to frontend
             await _safe_send(ws, TranscriptUpdate(
                 utterances=utterances, processing_time_ms=time_ms,
             ).model_dump_json())
-
-            # Send protocol update (fields fill in realtime!)
             await _send_protocol(ws, session)
 
-        # Restore status
-        status = "calibrating" if session.stage == SessionStage.CALIBRATING else "recording"
-        await _safe_send(ws, StatusMessage(status=status).model_dump_json())
+        await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
 
     except WebSocketDisconnect:
         logger.warning("[WS] Disconnected during processing")
@@ -74,7 +66,7 @@ async def _run_processing_cycle(
         session.release_processing()
 
         # Catch-up — if more audio accumulated during processing, run again
-        if (session.stage in (SessionStage.CALIBRATING, SessionStage.RECORDING)
+        if (session.stage == SessionStage.RECORDING
                 and session.audio_buffer.unprocessed_duration >= settings.processing_interval_seconds):
             logger.info("[WS] Catch-up: %.1fs unprocessed, starting next cycle",
                         session.audio_buffer.unprocessed_duration)
@@ -135,29 +127,21 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 # ---- STOP CALIBRATION ----
                 elif msg.type == ClientMessageType.STOP_CALIBRATION and session:
                     if session.stage == SessionStage.CALIBRATING:
-                        # Wait for any in-flight processing to finish
-                        await session.wait_for_processing_complete(timeout=15.0)
+                        await _safe_send(ws, StatusMessage(
+                            status="processing", message="Обработка калибровки...",
+                        ).model_dump_json())
 
-                        # Process ALL remaining audio
-                        if session.audio_buffer.unprocessed_duration > 0.5:
-                            await _run_processing_cycle(ws, session, pipeline)
+                        # Process ALL calibration audio as one batch
+                        utterances, time_ms = await pipeline.process_full_calibration(session)
+
+                        if utterances:
+                            await _safe_send(ws, TranscriptUpdate(
+                                utterances=utterances, processing_time_ms=time_ms,
+                            ).model_dump_json())
 
                         if not session.speaker_map:
                             session.speaker_map = {"SPEAKER_00": "doctor", "SPEAKER_01": "patient"}
-                            logger.warning("[WS] Calibration: no speakers, using defaults")
-
-                        # Re-extract patient info from FULL transcript (not just last chunk)
-                        patient_texts = [u.text for u in session.transcript if u.speaker == "patient"]
-                        if patient_texts:
-                            combined = " ".join(patient_texts)
-                            logger.info("[WS] Calibration: extracting from full text: %s", combined[:100])
-                            info = await pipeline.llm.extract_patient_info(combined)
-                            if info.get("full_name"):
-                                session.protocol.patient_info.full_name = info["full_name"]
-                            if info.get("age"):
-                                session.protocol.patient_info.age = info["age"]
-                            if info.get("gender"):
-                                session.protocol.patient_info.gender = info["gender"]
+                            logger.warning("[WS] Calibration: no speakers detected, using defaults")
 
                         session.calibration_end_time = session.audio_buffer.real_total_duration
                         logger.info("[WS] Calibration end: %.1fs, patient=%s", session.calibration_end_time, session.protocol.patient_info)

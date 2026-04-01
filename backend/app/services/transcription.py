@@ -66,7 +66,7 @@ class TranscriptionService:
                 "min_silence_duration_ms": 500,
                 "speech_pad_ms": 200,
             },
-            beam_size=5,
+            beam_size=settings.whisper_beam_size,
             best_of=1,
             without_timestamps=False,
         )

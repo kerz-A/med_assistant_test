@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     whisper_model: str = "medium"
     whisper_device: str = "auto"
     whisper_compute_type: str = "float16"
+    whisper_beam_size: int = 5
 
     # Pyannote
     hf_token: str = ""
