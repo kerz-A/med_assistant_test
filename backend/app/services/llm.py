@@ -372,8 +372,11 @@ class LLMService:
                         continue  # Don't overwrite existing data with empty
 
                     # For medications/allergies: append if new info, don't replace
-                    if current_val and field in ("medications", "allergies") and new_val not in current_val:
-                        setattr(updated.exam_data, field, f"{current_val}; {new_val}")
+                    if current_val and field in ("medications", "allergies"):
+                        existing_norm = current_val.lower().replace("—", "-").replace("–", "-")
+                        new_norm = new_val.lower().replace("—", "-").replace("–", "-")
+                        if new_norm not in existing_norm:
+                            setattr(updated.exam_data, field, f"{current_val}; {new_val}")
                     else:
                         setattr(updated.exam_data, field, new_val)
 
