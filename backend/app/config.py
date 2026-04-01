@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     audio_overlap_seconds: float = 2.0
     num_speakers: int = 2
 
+    # VAD (Silero)
+    vad_threshold: float = 0.5
+    vad_silence_ms: int = 600       # silence duration to end segment
+    vad_min_speech_ms: int = 500    # minimum speech segment duration
+    vad_max_speech_ms: int = 30000  # max speech segment (force-emit)
+    vad_speech_pad_ms: int = 100    # padding around speech
+
+    # Speaker ID
+    speaker_similarity_threshold: float = 0.1  # min diff between doctor/patient cosine sims
+
     # Server
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

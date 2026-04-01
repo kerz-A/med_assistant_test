@@ -1,4 +1,4 @@
-"""Session state for v3 — 4 stages: calibrate → record → edit → finalize."""
+"""Session state for v4 — VAD-driven: calibrate → record → edit → finalize."""
 
 import asyncio
 import logging
@@ -9,6 +9,7 @@ from ..config import settings
 from ..models.messages import Utterance
 from ..models.protocol import MedicalProtocol
 from ..core.audio_buffer import AudioRingBuffer
+from ..services.speaker_id import SpeakerProfile
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +31,19 @@ class SessionState:
         self.stage = SessionStage.IDLE
         self.protocol = MedicalProtocol()
         self.transcript: list[Utterance] = []
-        self.speaker_map: dict[str, str] = {}  # persists across all cycles
+        self.speaker_map: dict[str, str] = {}  # legacy, kept for compatibility
         self.audio_buffer = AudioRingBuffer(settings.audio_buffer_duration_seconds)
         self.sequence = 0
         self.is_processing = False
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
-        # FIX #1: Track calibration zone for stable speaker mapping
-        self.calibration_end_time: float = 0.0  # seconds of audio when calibration ended
-        self.doctor_raw_label: str | None = None  # pyannote label of doctor from calibration
+        self.calibration_end_time: float = 0.0
+
+        # Speaker ID via embeddings (replaces pyannote diarization for role assignment)
+        self.doctor_profile = SpeakerProfile()
+        self.patient_profile = SpeakerProfile()
+        self._calibration_first_speaker_set = False  # track if first speaker assigned
+
         logger.info("[SESSION] Created: id=%s speakers=%d", self.session_id, num_speakers)
 
     def add_audio(self, pcm_bytes: bytes) -> None:

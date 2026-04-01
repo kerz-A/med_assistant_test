@@ -116,7 +116,7 @@ async def wait_for_messages(ws, timeout: float = 30.0, stop_on: str | None = Non
 async def run(args):
     url = args.url
     print(f"\n{'='*60}")
-    print(f"Aiston TT v3 — WebSocket Test Streamer")
+    print(f"Aiston TT v4 — WebSocket Test Streamer (VAD + Speaker Embeddings)")
     print(f"Server: {url}")
     print(f"{'='*60}")
 

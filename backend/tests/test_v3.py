@@ -3,7 +3,8 @@ import sys
 from unittest.mock import MagicMock
 
 # Mock heavy dependencies that aren't needed for unit tests
-for mod in ["torch", "pyannote", "pyannote.audio", "faster_whisper", "httpx"]:
+for mod in ["torch", "pyannote", "pyannote.audio", "faster_whisper", "httpx",
+            "speechbrain", "speechbrain.inference", "speechbrain.inference.speaker"]:
     if mod not in sys.modules:
         sys.modules[mod] = MagicMock()
 
@@ -316,3 +317,88 @@ class TestMergeProtocol:
         result = self.llm._merge_protocol(raw, MedicalProtocol())
         expected_bmi = round(82 / (1.78 ** 2), 1)
         assert result.vitals.bmi == expected_bmi
+
+
+# ============================================================
+# Speaker ID tests
+# ============================================================
+
+class TestSpeakerID:
+    def test_speaker_profile_mean(self):
+        from app.services.speaker_id import SpeakerProfile
+        profile = SpeakerProfile()
+        profile.add(np.array([1.0, 0.0, 0.0]))
+        profile.add(np.array([0.0, 1.0, 0.0]))
+        mean = profile.mean_embedding
+        assert mean is not None
+        assert mean.shape == (3,)
+        # Should be L2 normalized
+        assert abs(np.linalg.norm(mean) - 1.0) < 0.01
+
+    def test_speaker_profile_empty(self):
+        from app.services.speaker_id import SpeakerProfile
+        profile = SpeakerProfile()
+        assert profile.mean_embedding is None
+        assert profile.count == 0
+
+    def test_cosine_similarity(self):
+        from app.services.speaker_id import _cosine_similarity
+        a = np.array([1.0, 0.0, 0.0])
+        b = np.array([1.0, 0.0, 0.0])
+        assert abs(_cosine_similarity(a, b) - 1.0) < 0.01
+
+        c = np.array([0.0, 1.0, 0.0])
+        assert abs(_cosine_similarity(a, c) - 0.0) < 0.01
+
+    def test_classify_speaker_binary(self):
+        from app.services.speaker_id import SpeakerProfile, SpeakerIDService
+        service = SpeakerIDService()
+
+        doctor = SpeakerProfile()
+        doctor.add(np.array([1.0, 0.0, 0.0]))
+
+        patient = SpeakerProfile()
+        patient.add(np.array([0.0, 1.0, 0.0]))
+
+        # Embedding close to doctor
+        emb_doc = np.array([0.9, 0.1, 0.0])
+        role, conf = service.classify_speaker(emb_doc, doctor, patient)
+        assert role == "doctor"
+        assert conf > 0.3
+
+        # Embedding close to patient
+        emb_pat = np.array([0.1, 0.9, 0.0])
+        role, conf = service.classify_speaker(emb_pat, doctor, patient)
+        assert role == "patient"
+        assert conf > 0.3
+
+    def test_classify_only_doctor_known(self):
+        from app.services.speaker_id import SpeakerProfile, SpeakerIDService
+        service = SpeakerIDService()
+
+        doctor = SpeakerProfile()
+        doctor.add(np.array([1.0, 0.0, 0.0]))
+        patient = SpeakerProfile()  # empty
+
+        # Similar to doctor
+        role, _ = service.classify_speaker(np.array([0.95, 0.05, 0.0]), doctor, patient)
+        assert role == "doctor"
+
+        # Different from doctor
+        role, _ = service.classify_speaker(np.array([0.0, 1.0, 0.0]), doctor, patient)
+        assert role == "patient"
+
+
+# ============================================================
+# VAD Segmenter tests
+# ============================================================
+
+class TestVADSegmenter:
+    def test_speech_segment_duration(self):
+        from app.core.vad_segmenter import SpeechSegment
+        seg = SpeechSegment(
+            audio=np.zeros(16000, dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+        )
+        assert abs(seg.duration - 1.0) < 0.01
