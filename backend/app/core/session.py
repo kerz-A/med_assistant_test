@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from enum import Enum
 
@@ -31,53 +32,87 @@ class SessionState:
         self.stage = SessionStage.IDLE
         self.protocol = MedicalProtocol()
         self.transcript: list[Utterance] = []
-        self.speaker_map: dict[str, str] = {}  # legacy, kept for compatibility
+        self.speaker_map: dict[str, str] = {}
         self.audio_buffer = AudioRingBuffer(settings.audio_buffer_duration_seconds)
         self.sequence = 0
-        self.is_processing = False
-        self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
         self.calibration_end_time: float = 0.0
 
-        # Speaker ID via embeddings (replaces pyannote diarization for role assignment)
+        # Speaker ID via embeddings
         self.doctor_profile = SpeakerProfile()
         self.patient_profile = SpeakerProfile()
-        self._calibration_first_speaker_set = False  # track if first speaker assigned
+        self._calibration_first_speaker_set = False
+
+        # Calibration segment buffer (collected during streaming, processed at stop)
+        self._calibration_segments: list = []  # list[SpeechSegment] - avoid circular import
+
+        # LLM extraction batch buffer
+        self._pending_utterances: list[Utterance] = []
+        self._last_extraction_time: float = 0.0
 
         logger.info("[SESSION] Created: id=%s speakers=%d", self.session_id, num_speakers)
 
     def add_audio(self, pcm_bytes: bytes) -> None:
         self.audio_buffer.append(pcm_bytes)
 
-    def should_process(self) -> bool:
-        return (
-            self.stage == SessionStage.RECORDING  # Calibration is processed as one batch at stop
-            and not self.is_processing
-            and self.audio_buffer.unprocessed_duration >= settings.processing_interval_seconds
-        )
+    # ---- Calibration segment buffering ----
 
-    async def acquire_processing(self) -> bool:
-        async with self._lock:
-            if self.is_processing:
-                return False
-            self.is_processing = True
+    def buffer_calibration_segment(self, segment) -> None:
+        """Buffer a VAD segment for deferred processing at stop_calibration."""
+        self._calibration_segments.append(segment)
+
+    def get_calibration_segments(self) -> list:
+        """Return and clear buffered calibration segments."""
+        segs = self._calibration_segments
+        self._calibration_segments = []
+        return segs
+
+    # ---- LLM extraction batching ----
+
+    def add_pending_utterance(self, utterance: Utterance) -> None:
+        self._pending_utterances.append(utterance)
+
+    def should_extract_protocol(self) -> bool:
+        """Check if we should run LLM extraction (batch threshold reached)."""
+        if not self._pending_utterances:
+            return False
+        if len(self._pending_utterances) >= 3:
             return True
-
-    def release_processing(self) -> None:
-        self.is_processing = False
-
-    async def wait_for_processing_complete(self, timeout: float = 30.0) -> bool:
-        """Wait until any in-flight processing completes."""
-        for _ in range(int(timeout * 10)):
-            if not self.is_processing:
-                return True
-            await asyncio.sleep(0.1)
-        logger.warning("[SESSION] Timed out waiting for processing to complete (%.1fs)", timeout)
+        if time.monotonic() - self._last_extraction_time >= 15.0:
+            return True
         return False
+
+    def get_pending_utterances(self) -> list[Utterance]:
+        """Return and clear pending utterances for extraction."""
+        pending = self._pending_utterances
+        self._pending_utterances = []
+        self._last_extraction_time = time.monotonic()
+        return pending
+
+    def has_pending_utterances(self) -> bool:
+        return len(self._pending_utterances) > 0
+
+    # ---- Task tracking ----
 
     def track_task(self, task: asyncio.Task) -> None:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def wait_for_processing_complete(self, timeout: float = 30.0) -> bool:
+        """Wait until all tracked async tasks complete."""
+        if not self._tasks:
+            return True
+        tasks = list(self._tasks)  # snapshot to avoid mutation during wait
+        logger.info("[SESSION] Waiting for %d tasks (timeout=%.1fs)", len(tasks), timeout)
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=timeout)
+            if pending:
+                logger.warning("[SESSION] %d tasks still pending after %.1fs", len(pending), timeout)
+                return False
+            return True
+        except Exception as e:
+            logger.error("[SESSION] wait error: %s", e)
+            return False
 
     async def cancel_all_tasks(self) -> None:
         for t in self._tasks:

@@ -1,10 +1,7 @@
-"""WebSocket handler v4: VAD-driven segmentation + speaker embeddings.
+"""WebSocket handler v4.1: VAD-driven segmentation + speaker embeddings.
 
-Flow:
-  1. Audio frames arrive via WebSocket
-  2. VAD segments audio by speech/silence boundaries
-  3. Each complete speech segment → speaker ID + ASR + protocol extraction
-  4. Results sent to frontend immediately
+Calibration: collect VAD segments during streaming, process sequentially at stop.
+Recording: fire-and-forget tasks per VAD segment, batched LLM extraction.
 """
 
 import asyncio
@@ -56,20 +53,8 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
         session: SessionState | None = None
         vad: VADSegmenter | None = None
 
-        async def on_calibration_segment(segment: SpeechSegment) -> None:
-            """Called by VAD when a speech segment is detected during calibration."""
-            if session is None or session.stage != SessionStage.CALIBRATING:
-                return
-
-            utterances = await pipeline.process_calibration_segment(session, segment)
-            if utterances:
-                await _safe_send(ws, TranscriptUpdate(
-                    utterances=utterances, processing_time_ms=0,
-                ).model_dump_json())
-                await _send_protocol(ws, session)
-
         async def on_recording_segment(segment: SpeechSegment) -> None:
-            """Called by VAD when a speech segment is detected during recording."""
+            """Process a VAD speech segment during recording (runs as async task)."""
             if session is None or session.stage != SessionStage.RECORDING:
                 return
 
@@ -94,18 +79,15 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 # Binary audio — feed to VAD
                 if "bytes" in message and message["bytes"] and session and vad:
                     if session.stage in (SessionStage.CALIBRATING, SessionStage.RECORDING):
-                        # Also store in ring buffer for full audio access
                         session.add_audio(message["bytes"])
-
-                        # Feed to VAD — segments are processed via callbacks
                         segments = await vad.feed(message["bytes"])
-                        # Segments are already handled by on_segment callback,
-                        # but we can also process them here for recording
+
                         for seg in segments:
                             if session.stage == SessionStage.CALIBRATING:
-                                task = asyncio.create_task(on_calibration_segment(seg))
-                                session.track_task(task)
+                                # Buffer for deferred processing at stop_calibration
+                                session.buffer_calibration_segment(seg)
                             elif session.stage == SessionStage.RECORDING:
+                                # Fire-and-forget for realtime results
                                 task = asyncio.create_task(on_recording_segment(seg))
                                 session.track_task(task)
                     continue
@@ -129,7 +111,6 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                     session = session_manager.create_session(num_speakers=msg.config.num_speakers)
                     session.stage = SessionStage.CALIBRATING
 
-                    # Create VAD segmenter (no callback — we handle segments in audio loop)
                     vad = VADSegmenter()
                     vad.load_model()
 
@@ -146,16 +127,35 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                             status="processing", message="Обработка калибровки...",
                         ).model_dump_json())
 
-                        # Flush any remaining speech in VAD buffer
+                        # Flush remaining speech from VAD
                         final_seg = await vad.flush()
                         if final_seg:
-                            await on_calibration_segment(final_seg)
+                            session.buffer_calibration_segment(final_seg)
 
-                        # Wait for all calibration tasks to complete
-                        await session.wait_for_processing_complete(timeout=30.0)
+                        # Process ALL buffered segments SEQUENTIALLY
+                        cal_segments = session.get_calibration_segments()
+                        logger.info("[WS] Processing %d calibration segments sequentially",
+                                    len(cal_segments))
 
-                        # Finalize: extract patient info from transcript
+                        for seg in cal_segments:
+                            utterances = await pipeline.process_calibration_segment(session, seg)
+                            if utterances:
+                                await _safe_send(ws, TranscriptUpdate(
+                                    utterances=utterances, processing_time_ms=0,
+                                ).model_dump_json())
+
+                        # Finalize: extract patient info from completed transcript
                         await pipeline.finalize_calibration(session)
+
+                        # Validate calibration results
+                        if session.doctor_profile.count == 0 and session.patient_profile.count == 0:
+                            logger.error("[WS] Calibration failed: no speech detected")
+                            await _safe_send(ws, StatusMessage(
+                                status="error",
+                                message="Калибровка не удалась: речь не обнаружена. Попробуйте снова.",
+                            ).model_dump_json())
+                            session.stage = SessionStage.IDLE
+                            continue
 
                         if session.doctor_profile.count == 0:
                             logger.warning("[WS] No doctor segments during calibration")
@@ -187,7 +187,8 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 elif msg.type == ClientMessageType.START_RECORDING and session and vad:
                     if session.stage == SessionStage.CALIBRATED:
                         session.stage = SessionStage.RECORDING
-                        # Reset VAD for clean recording start
+                        # Clear any leftover calibration data, reset VAD
+                        session.get_calibration_segments()
                         vad.reset()
                         await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
                         logger.info("[WS] Recording started: session=%s", session.session_id)
@@ -200,8 +201,20 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                         if final_seg:
                             await on_recording_segment(final_seg)
 
-                        # Wait for all recording tasks to complete
-                        await session.wait_for_processing_complete(timeout=30.0)
+                        # Wait for all recording tasks
+                        await session.wait_for_processing_complete(timeout=60.0)
+
+                        # Flush remaining pending utterances through LLM
+                        if session.has_pending_utterances():
+                            pending = session.get_pending_utterances()
+                            recent = session.transcript[-15:]
+                            context = "\n".join(
+                                f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
+                                for u in recent
+                            )
+                            session.protocol = await pipeline.llm.extract_protocol_data(
+                                session.protocol, pending, context,
+                            )
 
                         session.stage = SessionStage.STOPPED
                         await _safe_send(ws, StatusMessage(
