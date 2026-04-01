@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Processing
     processing_interval_seconds: int = 8
     audio_buffer_duration_seconds: int = 120
+    audio_overlap_seconds: float = 2.0
     num_speakers: int = 2
 
     # Server

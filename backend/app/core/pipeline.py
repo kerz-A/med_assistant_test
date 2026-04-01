@@ -1,9 +1,11 @@
 """Processing pipeline v3: ASR + Diarization (parallel) → Alignment → Medical Correction → Protocol Extraction."""
 
 import asyncio
+import json
 import logging
 import time
 
+from ..config import settings
 from ..models.messages import Utterance
 from ..models.protocol import MedicalProtocol
 from ..services.alignment import align_segments
@@ -31,26 +33,41 @@ class ProcessingPipeline:
         """Run one processing cycle. Returns (utterances, processing_time_ms)."""
         start_time = time.monotonic()
 
-        new_audio = session.audio_buffer.get_unprocessed_audio()
-        full_audio = session.audio_buffer.get_full_audio()
+        # Get audio with overlap for better word boundary handling
+        audio_chunk, overlap_duration = session.audio_buffer.get_unprocessed_audio_with_overlap(
+            settings.audio_overlap_seconds,
+        )
 
-        if len(new_audio) < SAMPLE_RATE:
+        if len(audio_chunk) < SAMPLE_RATE:
             logger.info("[PIPELINE] session=%s | Audio too short, skipping", session.session_id)
             return [], 0
 
+        real_duration = session.audio_buffer.real_total_duration
+        chunk_duration = len(audio_chunk) / SAMPLE_RATE
+
         logger.info(
-            "[PIPELINE] session=%s | stage=%s | new=%.1fs full=%.1fs",
+            "[PIPELINE] session=%s | stage=%s | chunk=%.1fs (overlap=%.1fs) | session=%.1fs",
             session.session_id, session.stage.value,
-            len(new_audio) / SAMPLE_RATE, len(full_audio) / SAMPLE_RATE,
+            chunk_duration, overlap_duration, real_duration,
         )
 
-        # 1. ASR + Diarization in PARALLEL
-        # FIX: Cap diarization window to last 60s to prevent exponential slowdown
+        # 1. ASR + Diarization in PARALLEL on the SAME audio
         t0 = time.monotonic()
-        max_diar_samples = 60 * SAMPLE_RATE  # 60 seconds max for diarization
-        diar_audio = full_audio[-max_diar_samples:] if len(full_audio) > max_diar_samples else full_audio
-        asr_task = self.transcription.transcribe(new_audio)
-        diar_task = self.diarization.diarize(diar_audio, SAMPLE_RATE, session.num_speakers)
+
+        asr_task = self.transcription.transcribe(audio_chunk)
+
+        if session.stage == SessionStage.CALIBRATING:
+            # During calibration: diarize full audio for speaker role identification
+            full_audio = session.audio_buffer.get_full_audio()
+            diar_task = self.diarization.diarize(full_audio, SAMPLE_RATE, session.num_speakers)
+            # Diarization timestamps are absolute (relative to full_audio start = session start)
+            diar_offset = 0.0
+        else:
+            # During recording: diarize same chunk as ASR — timestamps naturally aligned
+            diar_task = self.diarization.diarize(audio_chunk, SAMPLE_RATE, session.num_speakers)
+            # Diar timestamps are relative to audio_chunk start, same as ASR
+            diar_offset = 0.0
+
         asr_segments, diar_segments = await asyncio.gather(asr_task, diar_task)
         parallel_ms = int((time.monotonic() - t0) * 1000)
 
@@ -63,24 +80,41 @@ class ProcessingPipeline:
         if not asr_segments:
             return [], 0
 
-        # 2. Alignment with persistent speaker_map + calibration verification
-        time_offset = max(0, session.audio_buffer.total_duration - len(new_audio) / SAMPLE_RATE)
-        utterances = align_segments(
-            asr_segments, diar_segments, session.speaker_map, time_offset,
-            calibration_end_time=session.calibration_end_time,
-        )
+        # 2. Filter out overlap segments — keep only segments from the "new" portion
+        if overlap_duration > 0:
+            asr_segments = [s for s in asr_segments if s.start >= overlap_duration - 0.1]
+            if not asr_segments:
+                return [], 0
+
+        # 3. Calculate time_offset: converts ASR-relative timestamps to absolute session time
+        # ASR timestamps are relative to audio_chunk start (which includes overlap)
+        # Absolute time of audio_chunk start = real_duration - chunk_duration
+        time_offset = max(0, real_duration - chunk_duration)
+
+        if session.stage == SessionStage.CALIBRATING:
+            # Calibration: diar on full_audio, ASR on chunk — need diar_offset=0, time_offset shifts ASR
+            utterances = align_segments(
+                asr_segments, diar_segments, session.speaker_map, time_offset,
+                calibration_end_time=session.calibration_end_time,
+                diar_offset=0.0,
+            )
+        else:
+            # Recording: both on same audio_chunk — diar needs same offset as ASR
+            utterances = align_segments(
+                asr_segments, diar_segments, session.speaker_map, time_offset,
+                calibration_end_time=session.calibration_end_time,
+                diar_offset=time_offset,
+            )
 
         if not utterances:
             return [], 0
 
-        # 3. Medical term correction — only during CALIBRATION (extraction prompt handles it during RECORDING)
+        # 4. Medical term correction — only during CALIBRATION (extraction prompt handles it during RECORDING)
         if session.stage != SessionStage.RECORDING:
             t0 = time.monotonic()
             all_texts = [u.text for u in utterances]
-            combined = " ||| ".join(all_texts)
-            corrected_combined = await self.llm.correct_medical_terms(combined)
-            corrected_parts = corrected_combined.split(" ||| ")
-            if len(corrected_parts) == len(utterances):
+            corrected_parts = await self.llm.correct_medical_terms_batch(all_texts)
+            if corrected_parts and len(corrected_parts) == len(utterances):
                 for i, part in enumerate(corrected_parts):
                     utterances[i] = Utterance(
                         speaker=utterances[i].speaker, text=part.strip(),
@@ -89,14 +123,20 @@ class ProcessingPipeline:
             correct_ms = int((time.monotonic() - t0) * 1000)
             logger.info("[PIPELINE] Medical correction: %dms", correct_ms)
 
-        # 4. Update transcript BEFORE extraction so LLM sees full context
+        # 5. Update transcript BEFORE extraction so LLM sees full context
         session.update_transcript(utterances)
 
-        # 5. Protocol extraction — during RECORDING only (1 LLM call per cycle, handles correction too)
+        # 6. Protocol extraction — during RECORDING only (1 LLM call per cycle)
         if session.stage == SessionStage.RECORDING:
             t0 = time.monotonic()
+            # Sliding window: send only recent context, not full transcript
+            recent = session.transcript[-15:] if len(session.transcript) > 15 else session.transcript
+            context = "\n".join(
+                f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
+                for u in recent
+            )
             session.protocol = await self.llm.extract_protocol_data(
-                session.protocol, utterances, session.format_full_transcript(),
+                session.protocol, utterances, context,
             )
             extract_ms = int((time.monotonic() - t0) * 1000)
             logger.info("[PIPELINE] Protocol extraction: %dms", extract_ms)
@@ -159,7 +199,7 @@ class ProcessingPipeline:
             cds.quality_criteria.vitals_collected,
             cds.quality_criteria.life_history_quality,
         ]) / 2.0
-        cds.examination_quality.recording_duration_sec = session.audio_buffer.total_duration
+        cds.examination_quality.recording_duration_sec = session.audio_buffer.real_total_duration
 
         time_ms = int((time.monotonic() - t0) * 1000)
         logger.info("[PIPELINE] Finalization complete: %dms | diagnosis=%s",

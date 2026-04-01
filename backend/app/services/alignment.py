@@ -99,10 +99,25 @@ def align_segments(
     speaker_map: dict[str, str],
     time_offset: float = 0.0,
     calibration_end_time: float = 0.0,
+    diar_offset: float = 0.0,
 ) -> list[Utterance]:
-    """Align ASR with diarization. speaker_map is MUTATED and persisted in session."""
+    """Align ASR with diarization. speaker_map is MUTATED and persisted in session.
+
+    Args:
+        diar_offset: Absolute time offset to add to diarization segment timestamps.
+            When ASR and diarization process the same audio chunk, both need the same
+            offset to convert to absolute session time.
+            When diarization processes full_audio (calibration), offset is 0.
+    """
     if not asr_segments:
         return []
+
+    # Shift diarization timestamps to absolute session time
+    if diar_offset > 0:
+        diarization_segments = [
+            DiarizationSegment(speaker=s.speaker, start=s.start + diar_offset, end=s.end + diar_offset)
+            for s in diarization_segments
+        ]
 
     # Verify speaker roles haven't swapped
     if calibration_end_time > 0:

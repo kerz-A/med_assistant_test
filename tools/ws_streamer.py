@@ -28,12 +28,28 @@ import wave
 
 import websockets
 
+EXPECTED_SAMPLE_RATE = 16000
+
+
+def validate_wav(wav_path: str) -> int:
+    """Validate WAV file format. Returns sample rate."""
+    with wave.open(wav_path, "rb") as wf:
+        channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        sr = wf.getframerate()
+        if channels != 1:
+            raise ValueError(f"{wav_path}: Expected mono, got {channels} channels")
+        if sampwidth != 2:
+            raise ValueError(f"{wav_path}: Expected 16-bit, got {sampwidth*8}-bit")
+        if sr != EXPECTED_SAMPLE_RATE:
+            print(f"    ⚠ WARNING: {wav_path} sample rate is {sr}Hz, expected {EXPECTED_SAMPLE_RATE}Hz")
+            print(f"    ⚠ Backend expects 16kHz. Timestamps may be incorrect!")
+        return sr
+
 
 async def stream_wav(ws, wav_path: str, chunk_duration_ms: int = 100) -> float:
     """Stream WAV file through WebSocket in real-time chunks. Returns duration in seconds."""
     with wave.open(wav_path, "rb") as wf:
-        assert wf.getnchannels() == 1, f"Expected mono, got {wf.getnchannels()} channels"
-        assert wf.getsampwidth() == 2, f"Expected 16-bit, got {wf.getsampwidth()*8}-bit"
         sr = wf.getframerate()
         total_frames = wf.getnframes()
         duration = total_frames / sr
@@ -48,8 +64,6 @@ async def stream_wav(ws, wav_path: str, chunk_duration_ms: int = 100) -> float:
             if not frames:
                 break
 
-            # If sample rate != 16000, we need to resample
-            # For simplicity, just send raw — backend expects 16kHz int16 mono
             await ws.send(frames)
             sent += len(frames) // 2  # 2 bytes per sample
 
@@ -106,6 +120,12 @@ async def run(args):
     print(f"Server: {url}")
     print(f"{'='*60}")
 
+    # Validate WAV files upfront
+    if args.calibration_wav:
+        validate_wav(args.calibration_wav)
+    if args.exam_wav:
+        validate_wav(args.exam_wav)
+
     async with websockets.connect(url) as ws:
 
         # ---- STAGE 1: CALIBRATION ----
@@ -116,13 +136,14 @@ async def run(args):
 
             await stream_wav(ws, args.calibration_wav)
 
-            # Wait a bit for processing
+            # Wait for processing messages (NOT for "calibrated" — that comes after stop)
             print("    Waiting for calibration processing...")
-            await wait_for_messages(ws, timeout=20, stop_on="calibrated")
+            await wait_for_messages(ws, timeout=10)
 
-            # Stop calibration
+            # Stop calibration — server will process remaining audio and respond with "calibrated"
+            print("    Sending stop_calibration...")
             await ws.send(json.dumps({"type": "stop_calibration"}))
-            await wait_for_messages(ws, timeout=15, stop_on="calibrated")
+            await wait_for_messages(ws, timeout=45, stop_on="calibrated")
             print("    ✅ Calibration done")
 
         else:
@@ -130,7 +151,7 @@ async def run(args):
             await ws.send(json.dumps({"type": "start_calibration", "config": {"num_speakers": 2}}))
             await asyncio.sleep(1)
             await ws.send(json.dumps({"type": "stop_calibration"}))
-            await wait_for_messages(ws, timeout=5, stop_on="calibrated")
+            await wait_for_messages(ws, timeout=10, stop_on="calibrated")
 
         # ---- STAGE 2: RECORDING ----
         exam_wav = args.exam_wav or args.calibration_wav
@@ -142,12 +163,12 @@ async def run(args):
 
         # Wait for processing to catch up
         print("    Waiting for processing to catch up...")
-        await wait_for_messages(ws, timeout=30)
+        await wait_for_messages(ws, timeout=45)
 
         # ---- STAGE 3: STOP ----
         print(f"\n[STAGE 3] Stopping recording...")
         await ws.send(json.dumps({"type": "stop_recording"}))
-        await wait_for_messages(ws, timeout=20, stop_on="stopped")
+        await wait_for_messages(ws, timeout=45, stop_on="stopped")
         print("    ✅ Recording stopped")
 
         # ---- STAGE 4: FINALIZE ----
@@ -158,7 +179,7 @@ async def run(args):
 
         await ws.send(json.dumps({"type": "finalize"}))
         print("    Generating diagnosis...")
-        msgs = await wait_for_messages(ws, timeout=60, stop_on="done")
+        msgs = await wait_for_messages(ws, timeout=90, stop_on="done")
 
         # Print final protocol
         for m in msgs:
