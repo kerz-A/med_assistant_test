@@ -46,7 +46,7 @@ class SessionState:
 
     def should_process(self) -> bool:
         return (
-            self.stage in (SessionStage.CALIBRATING, SessionStage.RECORDING)
+            self.stage == SessionStage.RECORDING  # Calibration is processed as one batch at stop
             and not self.is_processing
             and self.audio_buffer.unprocessed_duration >= settings.processing_interval_seconds
         )
