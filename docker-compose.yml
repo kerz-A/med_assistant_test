@@ -1,13 +1,4 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ./.cache/ollama:/root/.ollama
-    networks:
-      - app-network
-
   backend:
     build:
       context: ./backend
@@ -27,8 +18,7 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
     networks:
       - app-network
 
