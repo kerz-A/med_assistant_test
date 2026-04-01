@@ -86,19 +86,24 @@ class ProcessingPipeline:
         session.transcript.append(utterance)
         session.sequence += 1
 
-        # 3. Protocol extraction (LLM) — during recording only
+        # 3. Batched protocol extraction — accumulate utterances, extract every 3 or 15s
         if session.stage == SessionStage.RECORDING:
-            t0 = time.monotonic()
-            recent = session.transcript[-15:] if len(session.transcript) > 15 else session.transcript
-            context = "\n".join(
-                f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
-                for u in recent
-            )
-            session.protocol = await self.llm.extract_protocol_data(
-                session.protocol, [utterance], context,
-            )
-            extract_ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[PIPELINE] Protocol extraction: %dms", extract_ms)
+            session.add_pending_utterance(utterance)
+
+            if session.should_extract_protocol():
+                pending = session.get_pending_utterances()
+                t0 = time.monotonic()
+                recent = session.transcript[-15:] if len(session.transcript) > 15 else session.transcript
+                context = "\n".join(
+                    f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
+                    for u in recent
+                )
+                session.protocol = await self.llm.extract_protocol_data(
+                    session.protocol, pending, context,
+                )
+                extract_ms = int((time.monotonic() - t0) * 1000)
+                logger.info("[PIPELINE] Protocol extraction: %dms (%d utterances batched)",
+                            extract_ms, len(pending))
 
         total_ms = int((time.monotonic() - start_time) * 1000)
         logger.info("[PIPELINE] Segment complete: %dms total", total_ms)
