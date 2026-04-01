@@ -91,7 +91,7 @@ async def wait_for_messages(ws, timeout: float = 30.0, stop_on: str | None = Non
             elif msg_type == "transcript_update":
                 for u in msg.get("utterances", []):
                     icon = "👨‍⚕️" if u["speaker"] == "doctor" else "🤒"
-                    print(f"    ← {icon} {u['speaker']}: {u['text'][:60]}")
+                    print(f"    ← {icon} {u['speaker']}: {u['text'][:120]}")
             elif msg_type == "protocol_update":
                 filled = msg.get("filled_fields", [])
                 if filled:

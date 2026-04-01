@@ -86,46 +86,48 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
         logger.info("[WS] Connected: %s", client)
         session: SessionState | None = None
         vad: VADSegmenter | None = None
+        processing_sem = asyncio.Semaphore(settings.max_concurrent_segments)
 
         async def on_recording_segment(segment: SpeechSegment) -> None:
             """Process a VAD speech segment during recording (runs as async task)."""
             if session is None or session.stage != SessionStage.RECORDING:
                 return
 
-            try:
-                await _safe_send(ws, StatusMessage(status="processing").model_dump_json())
-
-                utterances = await pipeline.process_segment(session, segment)
-                if utterances:
-                    await _safe_send(ws, TranscriptUpdate(
-                        utterances=utterances, processing_time_ms=0,
-                    ).model_dump_json())
-                    await _send_protocol(ws, session)
-
-                await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
-
-            except Exception as e:
-                logger.exception("[WS] Recording segment error: %s", e)
-                # Fallback: try ASR only, preserve text as "unknown" speaker
+            async with processing_sem:  # Limit concurrent Whisper/ECAPA — prevents CPU overload
                 try:
-                    asr_segs = await pipeline.transcription.transcribe(segment.audio)
-                    text = " ".join(s.text.strip() for s in asr_segs if s.text.strip())
-                    if text:
-                        utterance = Utterance(
-                            speaker="unknown", text=text,
-                            start=round(segment.start_time, 2),
-                            end=round(segment.end_time, 2),
-                        )
-                        session.transcript.append(utterance)
-                        session.sequence += 1
+                    await _safe_send(ws, StatusMessage(status="processing").model_dump_json())
+
+                    utterances = await pipeline.process_segment(session, segment)
+                    if utterances:
                         await _safe_send(ws, TranscriptUpdate(
-                            utterances=[utterance], processing_time_ms=0,
+                            utterances=utterances, processing_time_ms=0,
                         ).model_dump_json())
-                        logger.info("[WS] ASR fallback: '%s'", text[:60])
-                except Exception:
-                    logger.exception("[WS] ASR fallback also failed for segment %.1f-%.1fs",
-                                     segment.start_time, segment.end_time)
-                await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
+                        await _send_protocol(ws, session)
+
+                    await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
+
+                except Exception as e:
+                    logger.exception("[WS] Recording segment error: %s", e)
+                    # Fallback: try ASR only, preserve text as "unknown" speaker
+                    try:
+                        asr_segs = await pipeline.transcription.transcribe(segment.audio)
+                        text = " ".join(s.text.strip() for s in asr_segs if s.text.strip())
+                        if text:
+                            utterance = Utterance(
+                                speaker="unknown", text=text,
+                                start=round(segment.start_time, 2),
+                                end=round(segment.end_time, 2),
+                            )
+                            session.transcript.append(utterance)
+                            session.sequence += 1
+                            await _safe_send(ws, TranscriptUpdate(
+                                utterances=[utterance], processing_time_ms=0,
+                            ).model_dump_json())
+                            logger.info("[WS] ASR fallback: '%s'", text[:60])
+                    except Exception:
+                        logger.exception("[WS] ASR fallback also failed for segment %.1f-%.1fs",
+                                         segment.start_time, segment.end_time)
+                    await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
 
         try:
             while True:
