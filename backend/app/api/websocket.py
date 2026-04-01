@@ -1,4 +1,11 @@
-"""WebSocket handler v3: calibrate → record → edit → finalize."""
+"""WebSocket handler v4: VAD-driven segmentation + speaker embeddings.
+
+Flow:
+  1. Audio frames arrive via WebSocket
+  2. VAD segments audio by speech/silence boundaries
+  3. Each complete speech segment → speaker ID + ASR + protocol extraction
+  4. Results sent to frontend immediately
+"""
 
 import asyncio
 import json
@@ -9,6 +16,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from ..config import settings
 from ..core.pipeline import ProcessingPipeline
 from ..core.session import SessionState, SessionStage, session_manager
+from ..core.vad_segmenter import VADSegmenter, SpeechSegment
 from ..models.messages import (
     CalibrationComplete,
     ClientMessage,
@@ -37,43 +45,6 @@ async def _send_protocol(ws: WebSocket, session: SessionState) -> None:
     await _safe_send(ws, msg.model_dump_json())
 
 
-async def _run_processing_cycle(
-    ws: WebSocket, session: SessionState, pipeline: ProcessingPipeline,
-) -> None:
-    """Triggered every N seconds during calibration/recording."""
-    if not await session.acquire_processing():
-        return
-
-    try:
-        await _safe_send(ws, StatusMessage(status="processing").model_dump_json())
-
-        utterances, time_ms = await pipeline.process_cycle(session)
-
-        if utterances:
-            await _safe_send(ws, TranscriptUpdate(
-                utterances=utterances, processing_time_ms=time_ms,
-            ).model_dump_json())
-            await _send_protocol(ws, session)
-
-        await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
-
-    except WebSocketDisconnect:
-        logger.warning("[WS] Disconnected during processing")
-    except Exception as e:
-        logger.exception("[WS] Processing error: %s", e)
-        await _safe_send(ws, StatusMessage(status="error", message=str(e)).model_dump_json())
-    finally:
-        session.release_processing()
-
-        # Catch-up — if more audio accumulated during processing, run again
-        if (session.stage == SessionStage.RECORDING
-                and session.audio_buffer.unprocessed_duration >= settings.processing_interval_seconds):
-            logger.info("[WS] Catch-up: %.1fs unprocessed, starting next cycle",
-                        session.audio_buffer.unprocessed_duration)
-            task = asyncio.create_task(_run_processing_cycle(ws, session, pipeline))
-            session.track_task(task)
-
-
 def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
     ws_router = APIRouter()
 
@@ -83,6 +54,35 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
         client = ws.client.host if ws.client else "?"
         logger.info("[WS] Connected: %s", client)
         session: SessionState | None = None
+        vad: VADSegmenter | None = None
+
+        async def on_calibration_segment(segment: SpeechSegment) -> None:
+            """Called by VAD when a speech segment is detected during calibration."""
+            if session is None or session.stage != SessionStage.CALIBRATING:
+                return
+
+            utterances = await pipeline.process_calibration_segment(session, segment)
+            if utterances:
+                await _safe_send(ws, TranscriptUpdate(
+                    utterances=utterances, processing_time_ms=0,
+                ).model_dump_json())
+                await _send_protocol(ws, session)
+
+        async def on_recording_segment(segment: SpeechSegment) -> None:
+            """Called by VAD when a speech segment is detected during recording."""
+            if session is None or session.stage != SessionStage.RECORDING:
+                return
+
+            await _safe_send(ws, StatusMessage(status="processing").model_dump_json())
+
+            utterances = await pipeline.process_segment(session, segment)
+            if utterances:
+                await _safe_send(ws, TranscriptUpdate(
+                    utterances=utterances, processing_time_ms=0,
+                ).model_dump_json())
+                await _send_protocol(ws, session)
+
+            await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
 
         try:
             while True:
@@ -91,13 +91,23 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 if message.get("type") == "websocket.disconnect":
                     break
 
-                # Binary audio
-                if "bytes" in message and message["bytes"] and session:
+                # Binary audio — feed to VAD
+                if "bytes" in message and message["bytes"] and session and vad:
                     if session.stage in (SessionStage.CALIBRATING, SessionStage.RECORDING):
+                        # Also store in ring buffer for full audio access
                         session.add_audio(message["bytes"])
-                        if session.should_process():
-                            task = asyncio.create_task(_run_processing_cycle(ws, session, pipeline))
-                            session.track_task(task)
+
+                        # Feed to VAD — segments are processed via callbacks
+                        segments = await vad.feed(message["bytes"])
+                        # Segments are already handled by on_segment callback,
+                        # but we can also process them here for recording
+                        for seg in segments:
+                            if session.stage == SessionStage.CALIBRATING:
+                                task = asyncio.create_task(on_calibration_segment(seg))
+                                session.track_task(task)
+                            elif session.stage == SessionStage.RECORDING:
+                                task = asyncio.create_task(on_recording_segment(seg))
+                                session.track_task(task)
                     continue
 
                 # Text messages
@@ -118,6 +128,11 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 if msg.type == ClientMessageType.START_CALIBRATION:
                     session = session_manager.create_session(num_speakers=msg.config.num_speakers)
                     session.stage = SessionStage.CALIBRATING
+
+                    # Create VAD segmenter (no callback — we handle segments in audio loop)
+                    vad = VADSegmenter()
+                    vad.load_model()
+
                     await _safe_send(ws, StatusMessage(
                         status="calibrating",
                         message="Спросите пациента: ФИО, полный возраст, пол",
@@ -125,27 +140,31 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                     await _send_protocol(ws, session)
 
                 # ---- STOP CALIBRATION ----
-                elif msg.type == ClientMessageType.STOP_CALIBRATION and session:
+                elif msg.type == ClientMessageType.STOP_CALIBRATION and session and vad:
                     if session.stage == SessionStage.CALIBRATING:
                         await _safe_send(ws, StatusMessage(
                             status="processing", message="Обработка калибровки...",
                         ).model_dump_json())
 
-                        # Process ALL calibration audio as one batch
-                        utterances, time_ms = await pipeline.process_full_calibration(session)
+                        # Flush any remaining speech in VAD buffer
+                        final_seg = await vad.flush()
+                        if final_seg:
+                            await on_calibration_segment(final_seg)
 
-                        if utterances:
-                            await _safe_send(ws, TranscriptUpdate(
-                                utterances=utterances, processing_time_ms=time_ms,
-                            ).model_dump_json())
+                        # Wait for all calibration tasks to complete
+                        await session.wait_for_processing_complete(timeout=30.0)
 
-                        if not session.speaker_map:
-                            session.speaker_map = {"SPEAKER_00": "doctor", "SPEAKER_01": "patient"}
-                            logger.warning("[WS] Calibration: no speakers detected, using defaults")
+                        # Finalize: extract patient info from transcript
+                        await pipeline.finalize_calibration(session)
+
+                        if session.doctor_profile.count == 0:
+                            logger.warning("[WS] No doctor segments during calibration")
+                        if session.patient_profile.count == 0:
+                            logger.warning("[WS] No patient segments during calibration")
 
                         session.calibration_end_time = session.audio_buffer.real_total_duration
-                        logger.info("[WS] Calibration end: %.1fs, patient=%s", session.calibration_end_time, session.protocol.patient_info)
                         session.stage = SessionStage.CALIBRATED
+
                         pi = session.protocol.patient_info
                         await _safe_send(ws, CalibrationComplete(
                             patient_info=pi,
@@ -157,23 +176,32 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                             message="Нажмите «Запись» для начала приёма.",
                         ).model_dump_json())
 
+                        logger.info(
+                            "[WS] Calibration done: patient=%s, doctor_embs=%d, patient_embs=%d",
+                            session.protocol.patient_info.full_name,
+                            session.doctor_profile.count,
+                            session.patient_profile.count,
+                        )
+
                 # ---- STAGE 2: START RECORDING ----
-                elif msg.type == ClientMessageType.START_RECORDING and session:
+                elif msg.type == ClientMessageType.START_RECORDING and session and vad:
                     if session.stage == SessionStage.CALIBRATED:
                         session.stage = SessionStage.RECORDING
-                        session.audio_buffer.mark_processed()  # reset unprocessed counter
+                        # Reset VAD for clean recording start
+                        vad.reset()
                         await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
                         logger.info("[WS] Recording started: session=%s", session.session_id)
 
                 # ---- STAGE 3: STOP RECORDING ----
-                elif msg.type == ClientMessageType.STOP_RECORDING and session:
+                elif msg.type == ClientMessageType.STOP_RECORDING and session and vad:
                     if session.stage == SessionStage.RECORDING:
-                        # Wait for any in-flight processing to finish
-                        await session.wait_for_processing_complete(timeout=15.0)
+                        # Flush remaining speech
+                        final_seg = await vad.flush()
+                        if final_seg:
+                            await on_recording_segment(final_seg)
 
-                        # Process remaining audio
-                        if session.audio_buffer.unprocessed_duration > 0.5:
-                            await _run_processing_cycle(ws, session, pipeline)
+                        # Wait for all recording tasks to complete
+                        await session.wait_for_processing_complete(timeout=30.0)
 
                         session.stage = SessionStage.STOPPED
                         await _safe_send(ws, StatusMessage(
