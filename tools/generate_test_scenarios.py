@@ -71,7 +71,13 @@ async def build_dialogue(dialogue: list, scenario: dict, pause_ms: int = 800) ->
     pcm = silence(500)
     gap = silence(pause_ms)
 
-    for i, (speaker, text) in enumerate(dialogue):
+    for i, turn in enumerate(dialogue):
+        # Support both tuple ("role", "text") and dict {"role": ..., "text": ...} formats
+        if isinstance(turn, dict):
+            speaker, text = turn["role"], turn["text"]
+        else:
+            speaker, text = turn[0], turn[1]
+
         if speaker == "doctor":
             voice = scenario["doctor_voice"]
             rate = scenario["doctor_rate"]
