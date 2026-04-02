@@ -57,12 +57,17 @@ async def lifespan(app: FastAPI):
     speaker_id_service.load_model()
     logger.info("[3/4] Speaker ID ready")
 
-    logger.info("[4/4] Initializing LLM client...")
+    logger.info("[4/5] Initializing LLM client...")
     llm_service.initialize()
     if settings.llm_provider == "ollama":
-        logger.info("[4/4] Pulling Ollama model %s...", settings.llm_model)
+        logger.info("[4/5] Pulling Ollama model %s...", settings.llm_model)
         await llm_service.pull_ollama_model()
-    logger.info("[4/4] LLM ready")
+    logger.info("[4/5] LLM ready")
+
+    if llm_service._fallback_client:
+        logger.info("[5/5] Pulling Ollama fallback model %s...", settings.ollama_model)
+        await llm_service.pull_fallback_model()
+        logger.info("[5/5] Fallback ready")
 
     logger.info("=" * 60)
     logger.info("Server ready — all models loaded")

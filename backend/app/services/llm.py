@@ -156,6 +156,7 @@ FINALIZATION_PROMPT = """\
 class LLMService:
     def __init__(self):
         self._client: httpx.AsyncClient | None = None
+        self._fallback_client: httpx.AsyncClient | None = None
         self._is_ollama: bool = False
         self._call_lock: asyncio.Lock = asyncio.Lock()
         self._last_call_time: float = 0.0
@@ -172,9 +173,21 @@ class LLMService:
         )
         logger.info("[LLM] Initialized: provider=%s model=%s", settings.llm_provider, settings.llm_model)
 
+        # Ollama fallback (when primary is not Ollama)
+        if not self._is_ollama:
+            self._fallback_client = httpx.AsyncClient(
+                base_url=f"{settings.ollama_base_url}/v1",
+                headers={"Content-Type": "application/json"},
+                timeout=120.0,
+            )
+            logger.info("[LLM] Fallback initialized: ollama/%s at %s",
+                        settings.ollama_model, settings.ollama_base_url)
+
     async def close(self) -> None:
         if self._client:
             await self._client.aclose()
+        if self._fallback_client:
+            await self._fallback_client.aclose()
 
     async def pull_ollama_model(self) -> None:
         if not self._is_ollama:
@@ -191,6 +204,47 @@ class LLMService:
                     logger.warning("[LLM] Ollama pull: %d %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.error("[LLM] Ollama pull failed: %s", e)
+
+    async def pull_fallback_model(self) -> None:
+        """Pull Ollama fallback model (called at startup when primary is Groq)."""
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                resp = await client.post(
+                    f"{settings.ollama_base_url}/api/pull",
+                    json={"name": settings.ollama_model, "stream": False},
+                )
+                if resp.status_code == 200:
+                    logger.info("[LLM-FALLBACK] Model '%s' ready", settings.ollama_model)
+                else:
+                    logger.warning("[LLM-FALLBACK] Pull: %d %s", resp.status_code, resp.text[:200])
+        except Exception as e:
+            logger.warning("[LLM-FALLBACK] Pull failed (non-critical): %s", e)
+
+    async def _chat_fallback(self, system: str, user: str, temperature: float = 0.2) -> str:
+        """Fallback to local Ollama when primary LLM fails. No retry needed (local)."""
+        if not self._fallback_client:
+            raise RuntimeError("Fallback not available")
+        payload = {
+            "model": settings.ollama_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+        }
+        t0 = time.monotonic()
+        resp = await self._fallback_client.post("/chat/completions", json=payload)
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.info("[LLM-FALLBACK] Response: %d in %dms", resp.status_code, ms)
+        resp.raise_for_status()
+        data = resp.json()
+        usage = data.get("usage", {})
+        if usage:
+            logger.info("[LLM-FALLBACK] Tokens: %s/%s/%s",
+                        usage.get("prompt_tokens", "?"),
+                        usage.get("completion_tokens", "?"),
+                        usage.get("total_tokens", "?"))
+        return data["choices"][0]["message"]["content"].strip()
 
     # ---- Core chat with retry ----
 
@@ -348,6 +402,13 @@ class LLMService:
             return self._merge_protocol(raw, current)
         except Exception as e:
             logger.error("[LLM] Extraction error: %s", e)
+            if self._fallback_client:
+                try:
+                    logger.info("[LLM-FALLBACK] Trying Ollama for extraction...")
+                    raw = await self._chat_fallback(EXTRACTION_PROMPT, user_prompt)
+                    return self._merge_protocol(raw, current)
+                except Exception as e2:
+                    logger.error("[LLM-FALLBACK] Also failed: %s", e2)
             raise
 
     # ---- Finalization ----
@@ -362,6 +423,13 @@ class LLMService:
             return self._merge_protocol(raw, current)
         except Exception as e:
             logger.error("[LLM] Finalization error: %s", e)
+            if self._fallback_client:
+                try:
+                    logger.info("[LLM-FALLBACK] Trying Ollama for finalization...")
+                    raw = await self._chat_fallback(system, "Сформируй заключение на русском языке.", temperature=0.3)
+                    return self._merge_protocol(raw, current)
+                except Exception as e2:
+                    logger.error("[LLM-FALLBACK] Also failed: %s", e2)
             return current
 
     # ---- JSON parser with fallbacks ----
