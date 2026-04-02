@@ -137,7 +137,7 @@ async def run(args):
     collected_transcript = []
     final_protocol = {}
 
-    async with websockets.connect(url, ping_interval=60, ping_timeout=120) as ws:
+    async with websockets.connect(url, ping_interval=30, ping_timeout=300, max_size=10 * 1024 * 1024) as ws:
 
         # ---- STAGE 1: CALIBRATION ----
         if not args.no_calibration and args.calibration_wav:
