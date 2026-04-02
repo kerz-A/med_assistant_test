@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
+    gigachat_auth_key: str = ""
+    gigachat_model: str = "GigaChat-2-Max"
 
     # Whisper
     whisper_model: str = "medium"
@@ -59,6 +61,7 @@ class Settings(BaseSettings):
             case "openai": return self.openai_api_key
             case "openrouter": return self.openrouter_api_key
             case "deepseek": return self.deepseek_api_key
+            case "gigachat": return self.gigachat_auth_key
             case _: return ""
 
     @property
@@ -69,6 +72,7 @@ class Settings(BaseSettings):
             case "ollama": return self.ollama_model
             case "openrouter": return self.openrouter_model
             case "deepseek": return self.deepseek_model
+            case "gigachat": return self.gigachat_model
             case _: return self.groq_model
 
     @property
@@ -79,6 +83,7 @@ class Settings(BaseSettings):
             case "ollama": return f"{self.ollama_base_url}/v1"
             case "openrouter": return "https://openrouter.ai/api/v1"
             case "deepseek": return "https://api.deepseek.com/v1"
+            case "gigachat": return "https://gigachat.devices.sberbank.ru/api/v1"
             case _: return "https://api.groq.com/openai/v1"
 
 
