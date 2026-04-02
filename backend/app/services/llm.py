@@ -159,6 +159,7 @@ class LLMService:
         self._is_ollama: bool = False
         self._call_lock: asyncio.Lock = asyncio.Lock()
         self._last_call_time: float = 0.0
+        self._rate_limited_until: float = 0.0
 
     def initialize(self) -> None:
         self._is_ollama = settings.llm_provider == "ollama"
@@ -220,8 +221,19 @@ class LLMService:
                 logger.warning("[LLM] Retry time limit exceeded (30s), giving up")
                 break
 
-            # Lock only for the HTTP request — NOT for retry sleep
+            # Lock for HTTP request + rate limit cooldown (prevents concurrent 429 races)
             async with self._call_lock:
+                # Wait for rate limit cooldown if another call got 429
+                now = time.monotonic()
+                if now < self._rate_limited_until:
+                    cooldown = self._rate_limited_until - now
+                    if (now - retry_start) + cooldown > 30.0:
+                        logger.warning("[LLM] Cooldown %.1fs would exceed 30s budget", cooldown)
+                        break
+                    logger.info("[LLM] Waiting %.1fs for rate-limit cooldown", cooldown)
+                    await asyncio.sleep(cooldown)
+
+                # Min 2s gap between calls
                 elapsed = time.monotonic() - self._last_call_time
                 if elapsed < 2.0:
                     await asyncio.sleep(2.0 - elapsed)
@@ -239,23 +251,23 @@ class LLMService:
                 self._last_call_time = time.monotonic()
                 ms = int((time.monotonic() - t0) * 1000)
 
-            # Rate limit handling OUTSIDE lock — other calls can proceed
-            if resp.status_code in (403, 429):
-                retry_after = resp.headers.get("retry-after")
-                if retry_after:
-                    try:
-                        wait = min(float(retry_after), 5.0)
-                    except ValueError:
+                # Rate limit: set cooldown INSIDE lock so other callers see it
+                if resp.status_code in (403, 429):
+                    retry_after = resp.headers.get("retry-after")
+                    if retry_after:
+                        try:
+                            wait = min(float(retry_after), 8.0)
+                        except ValueError:
+                            wait = min(2 ** attempt, 8)
+                    else:
                         wait = min(2 ** attempt, 8)
-                else:
-                    wait = min(2 ** attempt, 8)
-                wait += random.uniform(0, 0.5)
-                logger.warning("[LLM] Rate limited (%d), retry %d/%d in %.1fs",
-                               resp.status_code, attempt + 1, max_retries, wait)
-                await asyncio.sleep(wait)
-                continue
+                    wait += random.uniform(0, 0.5)
+                    self._rate_limited_until = time.monotonic() + wait
+                    logger.warning("[LLM] Rate limited (%d), cooldown %.1fs (attempt %d/%d)",
+                                   resp.status_code, wait, attempt + 1, max_retries)
+                    continue  # Next iteration sleeps inside lock via cooldown check
 
-            # Success
+            # Success (outside lock)
             logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
             resp.raise_for_status()
             data = resp.json()
@@ -336,7 +348,7 @@ class LLMService:
             return self._merge_protocol(raw, current)
         except Exception as e:
             logger.error("[LLM] Extraction error: %s", e)
-            return current
+            raise
 
     # ---- Finalization ----
 

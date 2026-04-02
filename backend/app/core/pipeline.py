@@ -98,13 +98,17 @@ class ProcessingPipeline:
                     f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
                     for u in recent
                 )
-                session.protocol = await self.llm.extract_protocol_data(
-                    session.protocol, pending, context,
-                )
-                session.confirm_extraction(len(pending))
-                extract_ms = int((time.monotonic() - t0) * 1000)
-                logger.info("[PIPELINE] Protocol extraction: %dms (%d utterances batched)",
-                            extract_ms, len(pending))
+                try:
+                    session.protocol = await self.llm.extract_protocol_data(
+                        session.protocol, pending, context,
+                    )
+                    session.confirm_extraction(len(pending))
+                    extract_ms = int((time.monotonic() - t0) * 1000)
+                    logger.info("[PIPELINE] Protocol extraction: %dms (%d utterances batched)",
+                                extract_ms, len(pending))
+                except Exception as e:
+                    logger.warning("[PIPELINE] Extraction failed, %d utterances stay pending: %s",
+                                   len(pending), e)
 
         total_ms = int((time.monotonic() - start_time) * 1000)
         logger.info("[PIPELINE] Segment complete: %dms total", total_ms)
