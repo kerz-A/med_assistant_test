@@ -158,18 +158,23 @@ class LLMService:
         self._client: httpx.AsyncClient | None = None
         self._fallback_client: httpx.AsyncClient | None = None
         self._is_ollama: bool = False
+        self._is_gigachat: bool = False
         self._call_lock: asyncio.Lock = asyncio.Lock()
         self._last_call_time: float = 0.0
         self._rate_limited_until: float = 0.0
+        self._gigachat_token: str | None = None
+        self._gigachat_token_expires: float = 0.0
 
     def initialize(self) -> None:
         self._is_ollama = settings.llm_provider == "ollama"
+        self._is_gigachat = settings.llm_provider == "gigachat"
         headers = {"Content-Type": "application/json"}
-        if not self._is_ollama and settings.llm_api_key:
+        if not self._is_ollama and not self._is_gigachat and settings.llm_api_key:
             headers["Authorization"] = f"Bearer {settings.llm_api_key}"
         self._client = httpx.AsyncClient(
             base_url=settings.llm_base_url, headers=headers,
             timeout=120.0 if self._is_ollama else 60.0,
+            verify=not self._is_gigachat,
         )
         logger.info("[LLM] Initialized: provider=%s model=%s", settings.llm_provider, settings.llm_model)
 
@@ -219,6 +224,35 @@ class LLMService:
                     logger.warning("[LLM-FALLBACK] Pull: %d %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.warning("[LLM-FALLBACK] Pull failed (non-critical): %s", e)
+
+    async def _refresh_gigachat_token(self) -> None:
+        """Refresh GigaChat access token via OAuth (30 min TTL)."""
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+                resp = await client.post(
+                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+                    headers={
+                        "Authorization": f"Basic {settings.gigachat_auth_key}",
+                        "RqUID": str(__import__('uuid').uuid4()),
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    data={"scope": "GIGACHAT_API_PERS"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                self._gigachat_token = data["access_token"]
+                # Token TTL ~30 min; refresh at 90% to avoid expiry mid-request
+                expires_at_ms = data.get("expires_at", 0)
+                if expires_at_ms:
+                    ttl_s = (expires_at_ms / 1000) - time.time()
+                    self._gigachat_token_expires = time.monotonic() + (ttl_s * 0.9)
+                else:
+                    self._gigachat_token_expires = time.monotonic() + 1620  # 27 min fallback
+                logger.info("[LLM] GigaChat token refreshed, expires in %.0fs",
+                            self._gigachat_token_expires - time.monotonic())
+        except Exception as e:
+            logger.error("[LLM] GigaChat token refresh failed: %s", e)
+            raise
 
     async def _chat_fallback(self, system: str, user: str, temperature: float = 0.2) -> str:
         """Fallback to local Ollama when primary LLM fails. No retry needed (local)."""
@@ -286,6 +320,11 @@ class LLMService:
                         break
                     logger.info("[LLM] Waiting %.1fs for rate-limit cooldown", cooldown)
                     await asyncio.sleep(cooldown)
+
+                # GigaChat: refresh OAuth token if expired
+                if self._is_gigachat and time.monotonic() >= self._gigachat_token_expires:
+                    await self._refresh_gigachat_token()
+                    self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
 
                 # Min 2s gap between calls
                 elapsed = time.monotonic() - self._last_call_time
