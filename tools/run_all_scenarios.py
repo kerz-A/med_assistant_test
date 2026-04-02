@@ -115,7 +115,7 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
     t0 = time.monotonic()
 
     try:
-        async with websockets.connect(url, ping_interval=60, ping_timeout=120) as ws:
+        async with websockets.connect(url, ping_interval=30, ping_timeout=300) as ws:
             # Stage 1: Calibration
             await ws.send(json.dumps({"type": "start_calibration", "config": {"num_speakers": 2}}))
             await asyncio.sleep(0.3)
@@ -129,7 +129,7 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
             await ws.send(json.dumps({"type": "start_recording"}))
             await asyncio.sleep(0.3)
             await stream_wav(ws, exam_wav)
-            await collect_messages(ws, timeout=30, transcript=transcript, protocol=protocol)
+            await collect_messages(ws, timeout=60, transcript=transcript, protocol=protocol)
 
             # Stage 3: Stop
             await ws.send(json.dumps({"type": "stop_recording"}))
