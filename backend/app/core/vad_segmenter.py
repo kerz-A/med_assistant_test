@@ -63,6 +63,7 @@ class VADSegmenter:
 
         # Timing
         self._total_samples = 0
+        self._device = "cpu"
 
         # Config
         self._threshold = settings.vad_threshold
@@ -71,16 +72,22 @@ class VADSegmenter:
         self._max_speech_samples = int(settings.vad_max_speech_ms / 1000 * SAMPLE_RATE)
         self._speech_pad_samples = int(settings.vad_speech_pad_ms / 1000 * SAMPLE_RATE)
 
-    def load_model(self) -> None:
-        """Load Silero VAD model (CPU, ~2MB)."""
-        logger.info("[VAD] Loading Silero VAD model...")
+    def load_model(self, device: str = "auto") -> None:
+        """Load Silero VAD model. Supports CPU and GPU."""
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        logger.info("[VAD] Loading Silero VAD model on %s...", device)
         self._model, _ = torch.hub.load(
             repo_or_dir="snakers4/silero-vad",
             model="silero_vad",
             trust_repo=True,
         )
+        if device == "cuda":
+            self._model = self._model.to(torch.device("cuda"))
+        self._device = device
         self._model.eval()
-        logger.info("[VAD] Silero VAD loaded (CPU)")
+        logger.info("[VAD] Silero VAD loaded (%s)", device)
 
     def reset(self) -> None:
         """Reset VAD state for new session."""
@@ -121,6 +128,8 @@ class VADSegmenter:
         """Process one VAD chunk (512 samples). Returns a segment if speech ended."""
         # Get speech probability from Silero VAD
         tensor = torch.from_numpy(chunk)
+        if self._device == "cuda":
+            tensor = tensor.to(torch.device("cuda"))
         speech_prob = self._model(tensor, SAMPLE_RATE).item()
 
         self._total_samples += VAD_CHUNK_SAMPLES

@@ -10,6 +10,7 @@ from .api.rest import router as rest_router
 from .api.websocket import create_websocket_router
 from .config import settings
 from .core.pipeline import ProcessingPipeline
+from .core.vad_segmenter import VADSegmenter
 from .services.llm import LLMService
 from .services.speaker_id import SpeakerIDService
 from .services.transcription import TranscriptionService
@@ -25,6 +26,7 @@ for lib in ("httpx", "httpcore", "faster_whisper", "pyannote", "speechbrain", "u
 
 logger = logging.getLogger(__name__)
 
+vad_service = VADSegmenter()
 transcription_service = TranscriptionService()
 speaker_id_service = SpeakerIDService()
 llm_service = LLMService()
@@ -39,26 +41,31 @@ async def lifespan(app: FastAPI):
     logger.info("[CONFIG] whisper=%s device=%s compute=%s beam=%d",
                 settings.whisper_model, settings.whisper_device,
                 settings.whisper_compute_type, settings.whisper_beam_size)
-    logger.info("[CONFIG] vad_silence=%dms vad_min_speech=%dms",
-                settings.vad_silence_ms, settings.vad_min_speech_ms)
+    logger.info("[CONFIG] vad_silence=%dms vad_min_speech=%dms concurrent=%d",
+                settings.vad_silence_ms, settings.vad_min_speech_ms,
+                settings.max_concurrent_segments)
 
-    logger.info("[1/3] Loading Whisper ASR...")
+    logger.info("[1/4] Loading Silero VAD...")
+    vad_service.load_model()
+    logger.info("[1/4] VAD ready")
+
+    logger.info("[2/4] Loading Whisper ASR...")
     transcription_service.load_model()
-    logger.info("[1/3] ASR ready")
+    logger.info("[2/4] ASR ready")
 
-    logger.info("[2/3] Loading ECAPA-TDNN speaker model...")
+    logger.info("[3/4] Loading ECAPA-TDNN speaker model...")
     speaker_id_service.load_model()
-    logger.info("[2/3] Speaker ID ready")
+    logger.info("[3/4] Speaker ID ready")
 
-    logger.info("[3/3] Initializing LLM client...")
+    logger.info("[4/4] Initializing LLM client...")
     llm_service.initialize()
     if settings.llm_provider == "ollama":
-        logger.info("[3/3] Pulling Ollama model %s...", settings.llm_model)
+        logger.info("[4/4] Pulling Ollama model %s...", settings.llm_model)
         await llm_service.pull_ollama_model()
-    logger.info("[3/3] LLM ready")
+    logger.info("[4/4] LLM ready")
 
     logger.info("=" * 60)
-    logger.info("Server ready — VAD + Speaker Embeddings pipeline")
+    logger.info("Server ready — all models loaded")
     logger.info("=" * 60)
     yield
     logger.info("Shutting down...")
@@ -70,4 +77,4 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 pipeline = ProcessingPipeline(transcription_service, speaker_id_service, llm_service)
 app.include_router(rest_router)
-app.include_router(create_websocket_router(pipeline))
+app.include_router(create_websocket_router(pipeline, vad_service))
