@@ -96,7 +96,7 @@ async def build_dialogue(dialogue: list, scenario: dict, pause_ms: int = 800) ->
 
 async def generate_scenario(scenario: dict, output_dir: str):
     sid = scenario["id"]
-    name = scenario["name"]
+    name = scenario.get("name", scenario["id"])
     out_dir = os.path.join(output_dir, sid)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -134,7 +134,7 @@ async def main():
         for s in SCENARIOS:
             voices = f"{s['doctor_voice'].split('-')[-1]} → {s['patient_voice'].split('-')[-1]}"
             hard = " ⚠️ HARD (same gender)" if s["doctor_voice"] == s["patient_voice"] else ""
-            print(f"  {s['id']}: {s['name']} [{voices}]{hard}")
+            print(f"  {s['id']}: [{voices}]{hard}")
         return
 
     print(f"{'='*60}")
