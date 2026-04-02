@@ -76,7 +76,7 @@ def _merge_segments_into_turns(segments: list[SpeechSegment], max_gap_s: float =
     return turns
 
 
-def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
+def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmenter) -> APIRouter:
     ws_router = APIRouter()
 
     @ws_router.websocket("/ws/session")
@@ -85,8 +85,15 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
         client = ws.client.host if ws.client else "?"
         logger.info("[WS] Connected: %s", client)
         session: SessionState | None = None
-        vad: VADSegmenter | None = None
-        processing_sem = asyncio.Semaphore(settings.max_concurrent_segments)
+        vad: VADSegmenter = vad_service  # Pre-loaded at startup
+
+        # Auto-detect concurrency: 1 for CPU, 2 for GPU
+        import torch
+        concurrency = settings.max_concurrent_segments
+        if concurrency == 0:
+            concurrency = 2 if torch.cuda.is_available() else 1
+        processing_sem = asyncio.Semaphore(concurrency)
+        logger.info("[WS] Concurrency: %d (max_concurrent_segments=%d)", concurrency, settings.max_concurrent_segments)
 
         async def on_recording_segment(segment: SpeechSegment) -> None:
             """Process a VAD speech segment during recording (runs as async task)."""
@@ -168,9 +175,7 @@ def create_websocket_router(pipeline: ProcessingPipeline) -> APIRouter:
                 if msg.type == ClientMessageType.START_CALIBRATION:
                     session = session_manager.create_session(num_speakers=msg.config.num_speakers)
                     session.stage = SessionStage.CALIBRATING
-
-                    vad = VADSegmenter()
-                    vad.load_model()
+                    vad.reset()  # Reset VAD state for new session (model already loaded)
 
                     await _safe_send(ws, StatusMessage(
                         status="calibrating",

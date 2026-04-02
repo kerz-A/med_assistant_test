@@ -9,6 +9,8 @@ services:
     volumes:
       - ./.cache/huggingface:/root/.cache/huggingface
       - ./.cache/faster_whisper:/root/.cache/faster_whisper
+      - ./.cache/torch:/root/.cache/torch
+      - ./.cache/speechbrain:/root/.cache/speechbrain
     networks:
       - app-network
 

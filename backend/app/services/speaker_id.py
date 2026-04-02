@@ -72,7 +72,7 @@ class SpeakerIDService:
 
         self._model = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir="/tmp/spkrec-ecapa-voxceleb",
+            savedir="/root/.cache/speechbrain/spkrec-ecapa-voxceleb",
             run_opts={"device": self._device},
         )
 

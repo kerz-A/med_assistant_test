@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # Speaker ID
     speaker_similarity_threshold: float = 0.1  # min diff between doctor/patient cosine sims
-    max_concurrent_segments: int = 1  # 1 for CPU, 2-3 for GPU — limits parallel Whisper calls
+    max_concurrent_segments: int = 0  # 0=auto (1 CPU, 2 GPU), or set manually
 
     # Server
     backend_host: str = "0.0.0.0"
