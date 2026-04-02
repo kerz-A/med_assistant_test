@@ -93,7 +93,19 @@ def bp_match(actual: str, expected: str) -> bool:
 # Metric 1: Transcription Completeness (TC)
 # ============================================================
 
-def calc_tc(transcript: list[dict], expected_dialogue: list[tuple]) -> tuple[float, dict]:
+def _normalize_dialogue(dialogue: list) -> list[tuple]:
+    """Convert dialogue to list of (role, text) tuples regardless of input format."""
+    result = []
+    for turn in dialogue:
+        if isinstance(turn, dict):
+            result.append((turn["role"], turn["text"]))
+        else:
+            result.append((turn[0], turn[1]))
+    return result
+
+
+def calc_tc(transcript: list[dict], expected_dialogue: list) -> tuple[float, dict]:
+    expected_dialogue = _normalize_dialogue(expected_dialogue)
     expected_count = len(expected_dialogue)
     actual_count = len(transcript)
     score = min(actual_count / expected_count, 1.0) * 100 if expected_count > 0 else 0.0
@@ -104,7 +116,8 @@ def calc_tc(transcript: list[dict], expected_dialogue: list[tuple]) -> tuple[flo
 # Metric 2: Speaker Accuracy (SA)
 # ============================================================
 
-def calc_sa(transcript: list[dict], expected_dialogue: list[tuple]) -> tuple[float, dict]:
+def calc_sa(transcript: list[dict], expected_dialogue: list) -> tuple[float, dict]:
+    expected_dialogue = _normalize_dialogue(expected_dialogue)
     matched = 0
     total = 0
     mismatches = []
@@ -232,6 +245,53 @@ def calc_oqs(tc, sa, fer, fva, da) -> float:
 # Evaluation
 # ============================================================
 
+def _normalize_expected(scenario_expected: dict, scenario: dict) -> dict:
+    """Convert flat expected_protocol to nested format matching actual protocol structure."""
+    exp = scenario_expected
+
+    # Extract full_name from calibration dialogue (patient's first line)
+    full_name = None
+    cal = scenario.get("calibration_dialogue", [])
+    for turn in cal:
+        role = turn["role"] if isinstance(turn, dict) else turn[0]
+        text = turn["text"] if isinstance(turn, dict) else turn[1]
+        if role == "patient":
+            full_name = text.split(",")[0].split(".")[0].strip()
+            # Remove common prefixes
+            for prefix in ["Здравствуйте", "Добрый день", "Меня зовут", "Ребёнка зовут"]:
+                full_name = full_name.replace(prefix, "").strip()
+            if full_name.startswith("."):
+                full_name = full_name[1:].strip()
+            break
+
+    return {
+        "patient_info": {
+            "full_name": full_name,
+            "age": exp.get("age"),
+            "gender": exp.get("gender"),
+        },
+        "exam_data": {
+            "complaints": exp.get("complaints"),
+            "complaints_details": exp.get("complaints_details"),
+            "anamnesis": exp.get("anamnesis"),
+            "life_anamnesis": exp.get("life_anamnesis"),
+            "allergies": exp.get("allergies"),
+            "medications": exp.get("medications"),
+            "diagnosis": exp.get("diagnosis"),
+            "treatment_plan": exp.get("treatment_plan"),
+            "patient_recommendations": exp.get("patient_recommendations"),
+        },
+        "vitals": {
+            "height_cm": float(exp["height"]) if exp.get("height") is not None else None,
+            "weight_kg": float(exp["weight"]) if exp.get("weight") is not None else None,
+            "bmi": exp.get("bmi"),
+            "pulse": float(exp["pulse"]) if exp.get("pulse") is not None else None,
+            "spo2": float(exp["spo2"]) if exp.get("spo2") is not None else None,
+            "systolic_bp": exp.get("bp"),
+        },
+    }
+
+
 def evaluate_result(result: dict) -> ScenarioMetrics:
     scenario_id = result["scenario_id"]
     scenario = next((s for s in SCENARIOS if s["id"] == scenario_id), None)
@@ -240,7 +300,7 @@ def evaluate_result(result: dict) -> ScenarioMetrics:
 
     transcript = result.get("transcript", [])
     protocol = result.get("protocol", {})
-    expected = scenario["expected_protocol"]
+    expected = _normalize_expected(scenario["expected_protocol"], scenario)
     full_dialogue = scenario["calibration_dialogue"] + scenario["exam_dialogue"]
 
     tc, tc_d = calc_tc(transcript, full_dialogue)
@@ -252,7 +312,7 @@ def evaluate_result(result: dict) -> ScenarioMetrics:
 
     return ScenarioMetrics(
         scenario_id=scenario_id,
-        scenario_name=scenario["name"],
+        scenario_name=scenario.get("name", scenario_id),
         tc=round(tc, 1), sa=round(sa, 1),
         fer=round(fer, 1), fva=round(fva, 1),
         da=da, oqs=round(oqs, 1),
