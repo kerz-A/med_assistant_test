@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     vad_max_speech_ms: int = 30000  # max speech segment (force-emit)
     vad_speech_pad_ms: int = 100    # padding around speech
 
+    # LLM extraction batching
+    extraction_batch_size: int = 5       # utterances before triggering extraction (was 3)
+    extraction_interval_seconds: float = 20.0  # max seconds between extractions (was 15)
+
     # Speaker ID
     speaker_similarity_threshold: float = 0.1  # min diff between doctor/patient cosine sims
     calibration_same_speaker_threshold: float = 0.75  # cosine sim above this = same speaker during calibration

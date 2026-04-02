@@ -86,12 +86,12 @@ class ProcessingPipeline:
         session.transcript.append(utterance)
         session.sequence += 1
 
-        # 3. Batched protocol extraction — accumulate utterances, extract every 3 or 15s
+        # 3. Batched protocol extraction — accumulate utterances, extract every 5 or 20s
         if session.stage == SessionStage.RECORDING:
             session.add_pending_utterance(utterance)
 
             if session.should_extract_protocol():
-                pending = session.get_pending_utterances()
+                pending = session.peek_pending_utterances()
                 t0 = time.monotonic()
                 recent = session.transcript[-15:] if len(session.transcript) > 15 else session.transcript
                 context = "\n".join(
@@ -101,6 +101,7 @@ class ProcessingPipeline:
                 session.protocol = await self.llm.extract_protocol_data(
                     session.protocol, pending, context,
                 )
+                session.confirm_extraction(len(pending))
                 extract_ms = int((time.monotonic() - t0) * 1000)
                 logger.info("[PIPELINE] Protocol extraction: %dms (%d utterances batched)",
                             extract_ms, len(pending))
