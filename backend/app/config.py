@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     # Speaker ID
     speaker_similarity_threshold: float = 0.1  # min diff between doctor/patient cosine sims
+    calibration_same_speaker_threshold: float = 0.75  # cosine sim above this = same speaker during calibration
     max_concurrent_segments: int = 0  # 0=auto (1 CPU, 2 GPU), or set manually
 
     # Server

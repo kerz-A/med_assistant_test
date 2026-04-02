@@ -142,7 +142,7 @@ class ProcessingPipeline:
             from ..services.speaker_id import _cosine_similarity
             doctor_sim = _cosine_similarity(embedding, session.doctor_profile.mean_embedding)
 
-            if doctor_sim > 0.6:
+            if doctor_sim > settings.calibration_same_speaker_threshold:
                 # Same speaker as doctor
                 role = "doctor"
                 session.doctor_profile.add(embedding)
@@ -169,6 +169,21 @@ class ProcessingPipeline:
 
     async def finalize_calibration(self, session: SessionState) -> None:
         """Extract patient info from calibration transcript."""
+        # Fallback: if no patient detected but we have 2+ turns, reassign the last turn as patient
+        if session.patient_profile.count == 0 and len(session.transcript) >= 2:
+            last = session.transcript[-1]
+            if last.speaker == "doctor" and session.doctor_profile.count >= 2:
+                last.speaker = "patient"
+                # Move last doctor embedding to patient profile
+                last_emb = session.doctor_profile.embeddings.pop()
+                session.doctor_profile._mean = None  # Invalidate cache
+                session.patient_profile.add(last_emb)
+                logger.info(
+                    "[PIPELINE] Calibration fallback: reassigned last turn as patient "
+                    "(had %d doctor embeddings, 0 patient)",
+                    session.doctor_profile.count + 1,
+                )
+
         patient_texts = [u.text for u in session.transcript if u.speaker == "patient"]
         if patient_texts:
             combined = " ".join(patient_texts)
