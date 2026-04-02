@@ -476,10 +476,10 @@ class LLMService:
     def _parse_json(self, raw: str) -> dict | None:
         if not raw:
             return None
-        # GigaChat sometimes wraps JSON in double braces: {{...}}
+        # GigaChat wraps JSON in double braces: {{ "key": {{ ... }} }}
         cleaned = raw.strip()
-        while cleaned.startswith("{{") and cleaned.endswith("}}"):
-            cleaned = cleaned[1:-1]
+        if "{{" in cleaned:
+            cleaned = cleaned.replace("{{", "{").replace("}}", "}")
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
