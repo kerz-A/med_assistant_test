@@ -22,6 +22,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import struct
 import sys
 import wave
@@ -74,7 +75,9 @@ async def stream_wav(ws, wav_path: str, chunk_duration_ms: int = 100) -> float:
         return duration
 
 
-async def wait_for_messages(ws, timeout: float = 30.0, stop_on: str | None = None) -> list[dict]:
+async def wait_for_messages(ws, timeout: float = 30.0, stop_on: str | None = None,
+                           transcript_out: list | None = None,
+                           protocol_out: dict | None = None) -> list[dict]:
     """Collect server messages until timeout or specific status."""
     messages = []
     try:
@@ -92,7 +95,11 @@ async def wait_for_messages(ws, timeout: float = 30.0, stop_on: str | None = Non
                 for u in msg.get("utterances", []):
                     icon = "👨‍⚕️" if u["speaker"] == "doctor" else "🤒"
                     print(f"    ← {icon} {u['speaker']}: {u['text'][:120]}")
+                    if transcript_out is not None:
+                        transcript_out.append({"speaker": u["speaker"], "text": u["text"]})
             elif msg_type == "protocol_update":
+                if protocol_out is not None:
+                    protocol_out.update(msg.get("protocol", {}))
                 filled = msg.get("filled_fields", [])
                 if filled:
                     print(f"    ← Protocol: {', '.join(filled)}")
@@ -126,6 +133,10 @@ async def run(args):
     if args.exam_wav:
         validate_wav(args.exam_wav)
 
+    # Collectors for evaluation output
+    collected_transcript = []
+    final_protocol = {}
+
     async with websockets.connect(url, ping_interval=60, ping_timeout=120) as ws:
 
         # ---- STAGE 1: CALIBRATION ----
@@ -138,12 +149,12 @@ async def run(args):
 
             # Wait for processing messages (NOT for "calibrated" — that comes after stop)
             print("    Waiting for calibration processing...")
-            await wait_for_messages(ws, timeout=10)
+            await wait_for_messages(ws, timeout=10, transcript_out=collected_transcript, protocol_out=final_protocol)
 
             # Stop calibration — server will process remaining audio and respond with "calibrated"
             print("    Sending stop_calibration...")
             await ws.send(json.dumps({"type": "stop_calibration"}))
-            await wait_for_messages(ws, timeout=45, stop_on="calibrated")
+            await wait_for_messages(ws, timeout=45, stop_on="calibrated", transcript_out=collected_transcript, protocol_out=final_protocol)
             print("    ✅ Calibration done")
 
         else:
@@ -151,7 +162,7 @@ async def run(args):
             await ws.send(json.dumps({"type": "start_calibration", "config": {"num_speakers": 2}}))
             await asyncio.sleep(1)
             await ws.send(json.dumps({"type": "stop_calibration"}))
-            await wait_for_messages(ws, timeout=10, stop_on="calibrated")
+            await wait_for_messages(ws, timeout=10, stop_on="calibrated", transcript_out=collected_transcript, protocol_out=final_protocol)
 
         # ---- STAGE 2: RECORDING ----
         exam_wav = args.exam_wav or args.calibration_wav
@@ -163,12 +174,12 @@ async def run(args):
 
         # Wait for processing to catch up
         print("    Waiting for processing to catch up...")
-        await wait_for_messages(ws, timeout=45)
+        await wait_for_messages(ws, timeout=45, transcript_out=collected_transcript, protocol_out=final_protocol)
 
         # ---- STAGE 3: STOP ----
         print(f"\n[STAGE 3] Stopping recording...")
         await ws.send(json.dumps({"type": "stop_recording"}))
-        await wait_for_messages(ws, timeout=45, stop_on="stopped")
+        await wait_for_messages(ws, timeout=45, stop_on="stopped", transcript_out=collected_transcript, protocol_out=final_protocol)
         print("    ✅ Recording stopped")
 
         # ---- STAGE 4: FINALIZE ----
@@ -179,7 +190,7 @@ async def run(args):
 
         await ws.send(json.dumps({"type": "finalize"}))
         print("    Generating diagnosis...")
-        msgs = await wait_for_messages(ws, timeout=90, stop_on="done")
+        msgs = await wait_for_messages(ws, timeout=90, stop_on="done", transcript_out=collected_transcript, protocol_out=final_protocol)
 
         # Print final protocol
         for m in msgs:
@@ -202,6 +213,18 @@ async def run(args):
 
         print("\n✅ Test complete!")
 
+        # Save result JSON for evaluation
+        if hasattr(args, 'output') and args.output:
+            os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+            result = {
+                "scenario_id": getattr(args, 'scenario_id', None) or "unknown",
+                "transcript": collected_transcript,
+                "protocol": final_protocol,
+            }
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            print(f"\n📊 Result saved: {args.output}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Stream WAV to Aiston TT backend")
@@ -210,6 +233,8 @@ def main():
     parser.add_argument("--url", default="ws://localhost:8000/ws/session", help="WebSocket URL")
     parser.add_argument("--no-calibration", action="store_true", help="Skip calibration phase")
     parser.add_argument("--auto-finalize", action="store_true", help="Auto-finalize without waiting for Enter")
+    parser.add_argument("--scenario-id", type=str, help="Scenario ID for evaluation (e.g. 01_cardiology)")
+    parser.add_argument("--output", type=str, help="Save result JSON for evaluation (e.g. results/01.json)")
     args = parser.parse_args()
 
     asyncio.run(run(args))
