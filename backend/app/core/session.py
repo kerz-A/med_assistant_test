@@ -76,11 +76,20 @@ class SessionState:
         """Check if we should run LLM extraction (batch threshold reached)."""
         if not self._pending_utterances:
             return False
-        if len(self._pending_utterances) >= 3:
+        if len(self._pending_utterances) >= settings.extraction_batch_size:
             return True
-        if time.monotonic() - self._last_extraction_time >= 15.0:
+        if time.monotonic() - self._last_extraction_time >= settings.extraction_interval_seconds:
             return True
         return False
+
+    def peek_pending_utterances(self) -> list[Utterance]:
+        """Return copy of pending utterances WITHOUT clearing (for safe extraction)."""
+        return list(self._pending_utterances)
+
+    def confirm_extraction(self, count: int) -> None:
+        """Clear first N pending utterances after successful extraction."""
+        self._pending_utterances = self._pending_utterances[count:]
+        self._last_extraction_time = time.monotonic()
 
     def get_pending_utterances(self) -> list[Utterance]:
         """Return and clear pending utterances for extraction."""

@@ -271,7 +271,7 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
 
                         # Flush remaining pending utterances through LLM
                         if session.has_pending_utterances():
-                            pending = session.get_pending_utterances()
+                            pending = session.peek_pending_utterances()
                             recent = session.transcript[-15:]
                             context = "\n".join(
                                 f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
@@ -280,6 +280,7 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                             session.protocol = await pipeline.llm.extract_protocol_data(
                                 session.protocol, pending, context,
                             )
+                            session.confirm_extraction(len(pending))
 
                         session.stage = SessionStage.STOPPED
                         await _safe_send(ws, StatusMessage(

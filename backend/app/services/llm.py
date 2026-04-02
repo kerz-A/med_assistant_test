@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 
@@ -156,6 +157,8 @@ class LLMService:
     def __init__(self):
         self._client: httpx.AsyncClient | None = None
         self._is_ollama: bool = False
+        self._call_lock: asyncio.Lock = asyncio.Lock()
+        self._last_call_time: float = 0.0
 
     def initialize(self) -> None:
         self._is_ollama = settings.llm_provider == "ollama"
@@ -207,38 +210,56 @@ class LLMService:
         if not json_mode:
             payload["max_tokens"] = 500
 
-        for attempt in range(3):
-            t0 = time.monotonic()
-            try:
-                resp = await self._client.post("/chat/completions", json=payload)
-                ms = int((time.monotonic() - t0) * 1000)
+        max_retries = 5
+        async with self._call_lock:
+            # Enforce minimum 2s gap between LLM calls to avoid rate limiting
+            elapsed = time.monotonic() - self._last_call_time
+            if elapsed < 2.0:
+                await asyncio.sleep(2.0 - elapsed)
 
-                if resp.status_code in (403, 429):
-                    wait = 2 ** attempt
-                    logger.warning("[LLM] Rate limited (%d), retry %d/3 in %ds", resp.status_code, attempt + 1, wait)
-                    await asyncio.sleep(wait)
-                    continue
+            for attempt in range(max_retries):
+                t0 = time.monotonic()
+                try:
+                    resp = await self._client.post("/chat/completions", json=payload)
+                    ms = int((time.monotonic() - t0) * 1000)
 
-                logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
-                resp.raise_for_status()
-                data = resp.json()
-                usage = data.get("usage", {})
-                if usage:
-                    logger.info("[LLM] Tokens: %s/%s/%s",
-                                usage.get("prompt_tokens", "?"),
-                                usage.get("completion_tokens", "?"),
-                                usage.get("total_tokens", "?"))
-                return data["choices"][0]["message"]["content"].strip()
+                    if resp.status_code in (403, 429):
+                        retry_after = resp.headers.get("retry-after")
+                        if retry_after:
+                            try:
+                                wait = min(float(retry_after), 30.0)
+                            except ValueError:
+                                wait = min(2 ** attempt, 16)
+                        else:
+                            wait = min(2 ** attempt, 16)
+                        wait += random.uniform(0, 0.5)
+                        logger.warning("[LLM] Rate limited (%d), retry %d/%d in %.1fs",
+                                       resp.status_code, attempt + 1, max_retries, wait)
+                        await asyncio.sleep(wait)
+                        continue
 
-            except httpx.TimeoutException:
-                logger.warning("[LLM] Timeout attempt %d/3", attempt + 1)
-                if attempt < 2:
-                    await asyncio.sleep(1)
-                    continue
-                raise
+                    logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    usage = data.get("usage", {})
+                    if usage:
+                        logger.info("[LLM] Tokens: %s/%s/%s",
+                                    usage.get("prompt_tokens", "?"),
+                                    usage.get("completion_tokens", "?"),
+                                    usage.get("total_tokens", "?"))
+                    self._last_call_time = time.monotonic()
+                    return data["choices"][0]["message"]["content"].strip()
 
-        resp.raise_for_status()
-        return ""
+                except httpx.TimeoutException:
+                    logger.warning("[LLM] Timeout attempt %d/%d", attempt + 1, max_retries)
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1)
+                        continue
+                    raise
+
+            self._last_call_time = time.monotonic()
+            resp.raise_for_status()
+            return ""
 
     # ---- Medical correction (JSON-based, not separator-based) ----
 
