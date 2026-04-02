@@ -211,55 +211,66 @@ class LLMService:
             payload["max_tokens"] = 500
 
         max_retries = 5
-        async with self._call_lock:
-            # Enforce minimum 2s gap between LLM calls to avoid rate limiting
-            elapsed = time.monotonic() - self._last_call_time
-            if elapsed < 2.0:
-                await asyncio.sleep(2.0 - elapsed)
+        retry_start = time.monotonic()
+        resp = None
 
-            for attempt in range(max_retries):
+        for attempt in range(max_retries):
+            # Hard cap: don't retry longer than 30s total
+            if time.monotonic() - retry_start > 30.0:
+                logger.warning("[LLM] Retry time limit exceeded (30s), giving up")
+                break
+
+            # Lock only for the HTTP request — NOT for retry sleep
+            async with self._call_lock:
+                elapsed = time.monotonic() - self._last_call_time
+                if elapsed < 2.0:
+                    await asyncio.sleep(2.0 - elapsed)
+
                 t0 = time.monotonic()
                 try:
                     resp = await self._client.post("/chat/completions", json=payload)
-                    ms = int((time.monotonic() - t0) * 1000)
-
-                    if resp.status_code in (403, 429):
-                        retry_after = resp.headers.get("retry-after")
-                        if retry_after:
-                            try:
-                                wait = min(float(retry_after), 30.0)
-                            except ValueError:
-                                wait = min(2 ** attempt, 16)
-                        else:
-                            wait = min(2 ** attempt, 16)
-                        wait += random.uniform(0, 0.5)
-                        logger.warning("[LLM] Rate limited (%d), retry %d/%d in %.1fs",
-                                       resp.status_code, attempt + 1, max_retries, wait)
-                        await asyncio.sleep(wait)
-                        continue
-
-                    logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    usage = data.get("usage", {})
-                    if usage:
-                        logger.info("[LLM] Tokens: %s/%s/%s",
-                                    usage.get("prompt_tokens", "?"),
-                                    usage.get("completion_tokens", "?"),
-                                    usage.get("total_tokens", "?"))
-                    self._last_call_time = time.monotonic()
-                    return data["choices"][0]["message"]["content"].strip()
-
                 except httpx.TimeoutException:
+                    self._last_call_time = time.monotonic()
                     logger.warning("[LLM] Timeout attempt %d/%d", attempt + 1, max_retries)
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(1)
                         continue
                     raise
 
-            self._last_call_time = time.monotonic()
+                self._last_call_time = time.monotonic()
+                ms = int((time.monotonic() - t0) * 1000)
+
+            # Rate limit handling OUTSIDE lock — other calls can proceed
+            if resp.status_code in (403, 429):
+                retry_after = resp.headers.get("retry-after")
+                if retry_after:
+                    try:
+                        wait = min(float(retry_after), 5.0)
+                    except ValueError:
+                        wait = min(2 ** attempt, 8)
+                else:
+                    wait = min(2 ** attempt, 8)
+                wait += random.uniform(0, 0.5)
+                logger.warning("[LLM] Rate limited (%d), retry %d/%d in %.1fs",
+                               resp.status_code, attempt + 1, max_retries, wait)
+                await asyncio.sleep(wait)
+                continue
+
+            # Success
+            logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
             resp.raise_for_status()
-            return ""
+            data = resp.json()
+            usage = data.get("usage", {})
+            if usage:
+                logger.info("[LLM] Tokens: %s/%s/%s",
+                            usage.get("prompt_tokens", "?"),
+                            usage.get("completion_tokens", "?"),
+                            usage.get("total_tokens", "?"))
+            return data["choices"][0]["message"]["content"].strip()
+
+        # All retries exhausted
+        if resp is not None:
+            resp.raise_for_status()
+        raise RuntimeError("LLM retries exhausted")
 
     # ---- Medical correction (JSON-based, not separator-based) ----
 
