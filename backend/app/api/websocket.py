@@ -277,10 +277,14 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                                 f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
                                 for u in recent
                             )
-                            session.protocol = await pipeline.llm.extract_protocol_data(
-                                session.protocol, pending, context,
-                            )
-                            session.confirm_extraction(len(pending))
+                            try:
+                                session.protocol = await pipeline.llm.extract_protocol_data(
+                                    session.protocol, pending, context,
+                                )
+                                session.confirm_extraction(len(pending))
+                            except Exception as e:
+                                logger.warning("[WS] Final extraction failed, %d utterances unprocessed: %s",
+                                               len(pending), e)
 
                         session.stage = SessionStage.STOPPED
                         await _safe_send(ws, StatusMessage(
