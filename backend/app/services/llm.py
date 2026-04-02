@@ -476,6 +476,14 @@ class LLMService:
     def _parse_json(self, raw: str) -> dict | None:
         if not raw:
             return None
+        # GigaChat sometimes wraps JSON in double braces: {{...}}
+        cleaned = raw.strip()
+        while cleaned.startswith("{{") and cleaned.endswith("}}"):
+            cleaned = cleaned[1:-1]
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
@@ -553,8 +561,10 @@ class LLMService:
                             continue
                     elif field == "systolic_bp":
                         bp = str(value).strip()
-                        if re.match(r"^\d{2,3}/\d{2,3}$", bp):
-                            setattr(updated.vitals, field, bp)
+                        # Extract "120/80" from strings like "150/95 мм рт. ст." or "130/85|null"
+                        bp_match = re.search(r"(\d{2,3}/\d{2,3})", bp)
+                        if bp_match:
+                            setattr(updated.vitals, field, bp_match.group(1))
                         else:
                             logger.warning("[LLM] Invalid BP format: %s", value)
             # Auto BMI
