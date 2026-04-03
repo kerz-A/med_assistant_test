@@ -6,37 +6,30 @@
 cd tools
 pip install -r requirements.txt
 
-# 1. Сгенерировать тестовое аудио (два голоса: врач + пациент)
-python generate_test_audio.py
-# → test_calibration.wav (калибровка: ФИО, возраст)
-# → test_exam.wav (осмотр: жалобы, анамнез, витальные)
-# → test_dialogue.wav (всё вместе)
+# 1. Сгенерировать тестовое аудио для сценариев (два голоса: врач + пациент)
+python generate_test_scenarios.py              # все 11 сценариев
+python generate_test_scenarios.py --scenario 01_cardiology  # один
+python generate_test_scenarios.py --list        # список доступных
 
 # 2. Запустить тест через WebSocket (сервер должен быть запущен!)
-python ws_streamer.py test_calibration.wav test_exam.wav
+python ws_streamer.py test_scenarios_audio/01_cardiology/calibration.wav test_scenarios_audio/01_cardiology/exam.wav --auto-finalize
 
-# Автоматическая финализация (без ожидания Enter):
-python ws_streamer.py test_calibration.wav test_exam.wav --auto-finalize
+# 3. Запустить все сценарии
+python run_all_scenarios.py
+python run_all_scenarios.py --scenarios 01_cardiology 10_emergency
 
-# Другой сервер:
-python ws_streamer.py --url ws://192.168.1.100:8000/ws/session test_calibration.wav test_exam.wav
+# 4. Оценить результаты
+python evaluate_test.py results/
 ```
 
-## Что делает generate_test_audio.py
+## Файлы
 
-Генерирует WAV файлы с двумя русскими голосами через Microsoft Edge TTS:
-- Врач: `ru-RU-DmitryNeural` (мужской)
-- Пациент: `ru-RU-SvetlanaNeural` (женский)
-
-Диалог содержит все тестовые кейсы: ФИО, возраст, жалобы, анамнез, витальные показатели,
-аллергии, хронические заболевания, наследственность.
-
-## Что делает ws_streamer.py
-
-Эмулирует фронтенд — стримит WAV чанки через WebSocket в реальном времени:
-1. Отправляет `start_calibration` + стримит калибровочное аудио + `stop_calibration`
-2. Отправляет `start_recording` + стримит аудио осмотра + `stop_recording`
-3. Отправляет `finalize`
-4. Выводит итоговый протокол
-
-Можно запускать повторно без перезаписи аудио.
+| Файл | Назначение |
+|------|-----------|
+| `generate_test_scenarios.py` | Генерация WAV из текстовых сценариев через Edge TTS |
+| `test_scenarios/scenarios.py` | 11 сценариев: диалоги, голоса, expected-протоколы |
+| `ws_streamer.py` | Ручной запуск 1 сценария — стримит WAV на сервер |
+| `run_all_scenarios.py` | Массовый запуск сценариев, сохранение результатов |
+| `evaluate_test.py` | Расчёт метрик: TC, SA, FER, FVA, DA, OQS, CDS |
+| `test_scenarios_audio/` | Сгенерированные WAV для каждого сценария |
+| `results/` | JSON с результатами последнего прогона |

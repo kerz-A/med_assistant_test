@@ -10,13 +10,13 @@ Usage:
     pip install websockets
 
     # Full flow with two files:
-    python ws_streamer.py test_calibration.wav test_exam.wav
+    python ws_streamer.py test_scenarios_audio/01_cardiology/calibration.wav test_scenarios_audio/01_cardiology/exam.wav
 
     # Stream single file as recording (skip calibration):
-    python ws_streamer.py --no-calibration test_dialogue.wav
+    python ws_streamer.py --no-calibration test_scenarios_audio/01_cardiology/exam.wav
 
     # Custom server:
-    python ws_streamer.py --url ws://192.168.1.100:8000/ws/session test_calibration.wav test_exam.wav
+    python ws_streamer.py --url ws://192.168.1.100:8000/ws/session test_scenarios_audio/01_cardiology/calibration.wav test_scenarios_audio/01_cardiology/exam.wav
 """
 
 import argparse
