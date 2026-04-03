@@ -40,6 +40,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border:none;border-radius:var(--radius);font-size:.85rem;font-weight:600;cursor:pointer;transition:all .2s}
 .btn:disabled{opacity:.35;cursor:not-allowed}
 .btn.hidden{display:none}
+.btn.btn-loading{opacity:.7;cursor:wait;pointer-events:none}
+.btn.btn-loading .btn-spinner{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;margin-right:2px}
+.btn .btn-spinner{display:none}
 .btn-calibrate{background:#7c3aed;color:#fff}.btn-calibrate:not(:disabled):hover{background:#6d28d9}
 .btn-stop-cal{background:#475569;color:#fff}
 .btn-record{background:var(--danger);color:#fff}.btn-record:not(:disabled):hover{background:#b91c1c}
