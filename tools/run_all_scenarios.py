@@ -128,17 +128,19 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
             # Stage 2: Recording
             await ws.send(json.dumps({"type": "start_recording"}))
             await asyncio.sleep(0.3)
-            await stream_wav(ws, exam_wav)
-            await collect_messages(ws, timeout=60, transcript=transcript, protocol=protocol)
+            exam_duration = await stream_wav(ws, exam_wav)
+            # Wait proportional to audio length: on CPU, processing can take 1.5x real-time
+            post_stream_timeout = max(60, exam_duration * 2)
+            await collect_messages(ws, timeout=post_stream_timeout, transcript=transcript, protocol=protocol)
 
             # Stage 3: Stop
             await ws.send(json.dumps({"type": "stop_recording"}))
-            await collect_messages(ws, timeout=300, stop_on="stopped",
+            await collect_messages(ws, timeout=600, stop_on="stopped",
                                    transcript=transcript, protocol=protocol)
 
             # Stage 4: Finalize
             await ws.send(json.dumps({"type": "finalize"}))
-            await collect_messages(ws, timeout=120, stop_on="done",
+            await collect_messages(ws, timeout=300, stop_on="done",
                                    transcript=transcript, protocol=protocol)
 
         elapsed = time.monotonic() - t0
