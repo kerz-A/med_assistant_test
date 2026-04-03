@@ -134,9 +134,9 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
 
             async def _drain_messages():
                 """Drain incoming messages during streaming to prevent buffer overflow."""
-                try:
-                    while True:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=30.0)
                         msg = json.loads(raw)
                         msg_type = msg.get("type", "?")
                         if msg_type == "transcript_update":
@@ -144,10 +144,12 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
                                 transcript.append({"speaker": u["speaker"], "text": u["text"]})
                         elif msg_type == "protocol_update":
                             protocol.update(msg.get("protocol", {}))
-                except asyncio.TimeoutError:
-                    pass  # no more messages, streaming probably ended
-                except Exception:
-                    pass
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    except Exception:
+                        continue
 
             drain_task = asyncio.create_task(_drain_messages())
             exam_duration = await stream_wav(ws, exam_wav)
