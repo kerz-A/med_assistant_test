@@ -13,7 +13,7 @@ async def health():
     from ..config import settings
     gpu = torch.cuda.is_available()
     return {
-        "status": "ok", "version": "3.1",
+        "status": "ok", "version": "4.0.0",
         "gpu_available": gpu,
         "gpu_name": torch.cuda.get_device_name(0) if gpu else None,
         "llm_provider": settings.llm_provider,

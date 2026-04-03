@@ -364,6 +364,8 @@ class LLMService:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                if "access_token" not in data:
+                    raise RuntimeError(f"GigaChat OAuth: missing access_token in response: {str(data)[:200]}")
                 self._gigachat_token = data["access_token"]
                 # Token TTL ~30 min; refresh at 90% to avoid expiry mid-request
                 expires_at_ms = data.get("expires_at", 0)
@@ -402,7 +404,11 @@ class LLMService:
                         usage.get("prompt_tokens", "?"),
                         usage.get("completion_tokens", "?"),
                         usage.get("total_tokens", "?"))
-        return data["choices"][0]["message"]["content"].strip()
+        try:
+            return data["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError) as e:
+            logger.error("[LLM-FALLBACK] Unexpected response structure: %s", str(data)[:300])
+            raise RuntimeError(f"LLM fallback response missing expected fields: {e}")
 
     # ---- Core chat with retry ----
 
@@ -514,12 +520,16 @@ class LLMService:
                             usage.get("prompt_tokens", "?"),
                             usage.get("completion_tokens", "?"),
                             usage.get("total_tokens", "?"))
-            return data["choices"][0]["message"]["content"].strip()
+            try:
+                return data["choices"][0]["message"]["content"].strip()
+            except (KeyError, IndexError, TypeError) as e:
+                logger.error("[LLM] Unexpected response structure: %s", str(data)[:300])
+                raise RuntimeError(f"LLM response missing expected fields: {e}")
 
         # All retries exhausted
         if resp is not None:
-            resp.raise_for_status()
-        raise RuntimeError("LLM retries exhausted")
+            logger.error("[LLM] Final response: %d %s", resp.status_code, resp.text[:200])
+        raise RuntimeError(f"LLM retries exhausted (last status: {resp.status_code if resp else 'timeout'})")
 
     # ---- Medical correction (JSON-based, not separator-based) ----
 

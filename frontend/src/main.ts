@@ -58,6 +58,7 @@ class App {
   private stage: Stage = "idle";
   private timerInterval: ReturnType<typeof setInterval> | null = null;
   private recordStart = 0;
+  private fieldTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Elements
   private btnCalibrate!: HTMLButtonElement;
@@ -96,6 +97,7 @@ class App {
     this.setupButtons();
     this.ws.connect();
     this.setStage("idle");
+    window.addEventListener("beforeunload", () => this.ws.disconnect());
   }
 
   private setStage(s: Stage): void {
@@ -168,7 +170,7 @@ class App {
       for (const u of msg.utterances) {
         this.addTranscriptLine(u.speaker, u.text, u.start, u.end);
       }
-      if (this.stage === "processing") this.setStage(this.stage === "processing" ? "recording" : this.stage);
+      if (this.stage === "processing") this.setStage("recording");
     };
 
     this.ws.onProtocolUpdate = (msg) => {
@@ -358,9 +360,9 @@ class App {
     const nameEl = document.getElementById("field-full_name") as HTMLTextAreaElement | null;
     const ageEl = document.getElementById("field-age") as HTMLTextAreaElement | null;
     const genderEl = document.getElementById("field-gender") as HTMLTextAreaElement | null;
-    if (nameEl && pi.full_name) { nameEl.value = pi.full_name; nameEl.classList.add("updated"); setTimeout(() => nameEl.classList.remove("updated"), 1500); }
-    if (ageEl && pi.age != null) { ageEl.value = String(pi.age); ageEl.classList.add("updated"); setTimeout(() => ageEl.classList.remove("updated"), 1500); }
-    if (genderEl && pi.gender) { genderEl.value = pi.gender; genderEl.classList.add("updated"); setTimeout(() => genderEl.classList.remove("updated"), 1500); }
+    if (nameEl && pi.full_name) { nameEl.value = pi.full_name; this.flashUpdate("full_name", nameEl); }
+    if (ageEl && pi.age != null) { ageEl.value = String(pi.age); this.flashUpdate("age", ageEl); }
+    if (genderEl && pi.gender) { genderEl.value = pi.gender; this.flashUpdate("gender", genderEl); }
 
     // Also update header
     if (pi.full_name || pi.age) {
@@ -377,8 +379,7 @@ class App {
       if (val && typeof val === "string" && val.trim()) {
         if (el.value !== val) {
           el.value = val;
-          el.classList.add("updated");
-          setTimeout(() => el.classList.remove("updated"), 1500);
+          this.flashUpdate(`field-${f.key}`, el);
         }
       }
     }
@@ -393,8 +394,7 @@ class App {
         if (valEl.textContent !== txt) {
           valEl.textContent = txt;
           valEl.classList.remove("empty");
-          card.classList.add("updated");
-          setTimeout(() => card.classList.remove("updated"), 1500);
+          this.flashUpdate(`vital-${v.key}`, card);
         }
       }
     }
@@ -444,6 +444,13 @@ class App {
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${m.toString().padStart(2,"0")}:${s.toString().padStart(2,"0")}`;
+  }
+
+  private flashUpdate(key: string, el: Element, cls: string = "updated"): void {
+    const prev = this.fieldTimeouts.get(key);
+    if (prev) clearTimeout(prev);
+    el.classList.add(cls);
+    this.fieldTimeouts.set(key, setTimeout(() => { el.classList.remove(cls); this.fieldTimeouts.delete(key); }, 1500));
   }
 
   private setBtnLoading(btn: HTMLButtonElement, text: string): void {
