@@ -73,6 +73,7 @@ class ScenarioMetrics:
     da: float = 0.0
     oqs: float = 0.0
     cds: CDSMetrics = field(default_factory=CDSMetrics)
+    elapsed_seconds: float = 0.0  # scenario execution time
     details: dict = field(default_factory=dict)
 
 
@@ -367,6 +368,7 @@ def evaluate_result(result: dict) -> ScenarioMetrics:
     da, da_d = calc_da(protocol, expected)
     oqs = calc_oqs(tc, sa, fer, fva, da)
     cds = extract_cds(protocol)
+    elapsed = result.get("elapsed_seconds", 0.0)
 
     return ScenarioMetrics(
         scenario_id=scenario_id,
@@ -374,29 +376,48 @@ def evaluate_result(result: dict) -> ScenarioMetrics:
         tc=round(tc, 1), sa=round(sa, 1),
         fer=round(fer, 1), fva=round(fva, 1),
         da=da, oqs=round(oqs, 1), cds=cds,
+        elapsed_seconds=elapsed,
         details={"TC": tc_d, "SA": sa_d, "FER": fer_d, "FVA": fva_d, "DA": da_d},
     )
 
 
 def print_report(metrics_list: list[ScenarioMetrics]):
-    print(f"\n{'='*105}")
-    print(f"{'Scenario':<40} {'TC':>6} {'SA':>6} {'FER':>6} {'FVA':>6} {'DA':>4} {'OQS':>6} {'CDS':>7}")
-    print(f"{'-'*105}")
+    has_timing = any(m.elapsed_seconds > 0 for m in metrics_list)
+    width = 113 if has_timing else 105
+
+    print(f"\n{'='*width}")
+    header = f"{'Scenario':<40} {'TC':>6} {'SA':>6} {'FER':>6} {'FVA':>6} {'DA':>4} {'OQS':>6} {'CDS':>7}"
+    if has_timing:
+        header += f" {'Time':>6}"
+    print(header)
+    print(f"{'-'*width}")
 
     for m in metrics_list:
         da_str = "YES" if m.da == 1.0 else "NO"
         cds_str = f"{m.cds.overall_score:.1f}/5" if m.cds.overall_score > 0 else "  —"
-        print(f"{m.scenario_name[:39]:<40} {m.tc:>5.1f}% {m.sa:>5.1f}% {m.fer:>5.1f}% {m.fva:>5.1f}% {da_str:>4} {m.oqs:>5.1f}% {cds_str:>7}")
+        line = f"{m.scenario_name[:39]:<40} {m.tc:>5.1f}% {m.sa:>5.1f}% {m.fer:>5.1f}% {m.fva:>5.1f}% {da_str:>4} {m.oqs:>5.1f}% {cds_str:>7}"
+        if has_timing:
+            time_str = f"{m.elapsed_seconds:.0f}s" if m.elapsed_seconds > 0 else "  —"
+            line += f" {time_str:>6}"
+        print(line)
 
-    print(f"{'-'*105}")
+    print(f"{'-'*width}")
     n = len(metrics_list)
     if n > 0:
         avg = lambda attr: sum(getattr(m, attr) for m in metrics_list) / n
         da_pct = sum(m.da for m in metrics_list) / n
         cds_with_data = [m for m in metrics_list if m.cds.overall_score > 0]
         cds_avg_str = f"{sum(m.cds.overall_score for m in cds_with_data) / len(cds_with_data):.1f}/5" if cds_with_data else "  —"
-        print(f"{'AVERAGE':<40} {avg('tc'):>5.1f}% {avg('sa'):>5.1f}% {avg('fer'):>5.1f}% {avg('fva'):>5.1f}% {da_pct:>3.0%} {avg('oqs'):>5.1f}% {cds_avg_str:>7}")
-    print(f"{'='*105}")
+        avg_line = f"{'AVERAGE':<40} {avg('tc'):>5.1f}% {avg('sa'):>5.1f}% {avg('fer'):>5.1f}% {avg('fva'):>5.1f}% {da_pct:>3.0%} {avg('oqs'):>5.1f}% {cds_avg_str:>7}"
+        if has_timing:
+            timed = [m for m in metrics_list if m.elapsed_seconds > 0]
+            if timed:
+                avg_time = sum(m.elapsed_seconds for m in timed) / len(timed)
+                avg_line += f" {avg_time:>5.0f}s"
+            else:
+                avg_line += f" {'  —':>6}"
+        print(avg_line)
+    print(f"{'='*width}")
 
     same = [m for m in metrics_list if m.scenario_id in SAME_GENDER_SCENARIOS]
     diff = [m for m in metrics_list if m.scenario_id not in SAME_GENDER_SCENARIOS]
@@ -481,6 +502,7 @@ def main():
                     "id": m.scenario_id, "name": m.scenario_name,
                     "TC": m.tc, "SA": m.sa, "FER": m.fer, "FVA": m.fva,
                     "DA": m.da, "OQS": m.oqs,
+                    "elapsed_seconds": m.elapsed_seconds,
                     "CDS": {
                         "overall_score": m.cds.overall_score,
                         "criteria_completed": m.cds.criteria_completed,

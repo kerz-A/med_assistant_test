@@ -433,7 +433,8 @@ class LLMService:
                 logger.warning("[LLM] Retry time limit exceeded (30s), giving up")
                 break
 
-            # Lock for HTTP request + rate limit cooldown (prevents concurrent 429 races)
+            # SHORT lock: rate-limit check, token refresh, gap enforcement
+            should_break = False
             async with self._call_lock:
                 # Wait for rate limit cooldown if another call got 429
                 now = time.monotonic()
@@ -441,35 +442,43 @@ class LLMService:
                     cooldown = self._rate_limited_until - now
                     if (now - retry_start) + cooldown > 30.0:
                         logger.warning("[LLM] Cooldown %.1fs would exceed 30s budget", cooldown)
-                        break
-                    logger.info("[LLM] Waiting %.1fs for rate-limit cooldown", cooldown)
-                    await asyncio.sleep(cooldown)
+                        should_break = True
+                    else:
+                        logger.info("[LLM] Waiting %.1fs for rate-limit cooldown", cooldown)
+                        await asyncio.sleep(cooldown)
 
-                # GigaChat: refresh OAuth token if expired
-                if self._is_gigachat and time.monotonic() >= self._gigachat_token_expires:
-                    await self._refresh_gigachat_token()
-                    self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
+                if not should_break:
+                    # GigaChat: refresh OAuth token if expired
+                    if self._is_gigachat and time.monotonic() >= self._gigachat_token_expires:
+                        await self._refresh_gigachat_token()
+                        self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
 
-                # Min 2s gap between calls
-                elapsed = time.monotonic() - self._last_call_time
-                if elapsed < 2.0:
-                    await asyncio.sleep(2.0 - elapsed)
+                    # Configurable gap between calls (0 for GigaChat, 2.0 for Groq)
+                    if settings.llm_min_gap_seconds > 0:
+                        elapsed = time.monotonic() - self._last_call_time
+                        if elapsed < settings.llm_min_gap_seconds:
+                            await asyncio.sleep(settings.llm_min_gap_seconds - elapsed)
 
-                t0 = time.monotonic()
-                try:
-                    resp = await self._client.post("/chat/completions", json=payload)
-                except httpx.TimeoutException:
                     self._last_call_time = time.monotonic()
-                    logger.warning("[LLM] Timeout attempt %d/%d", attempt + 1, max_retries)
-                    if attempt < max_retries - 1:
-                        continue
-                    raise
 
-                self._last_call_time = time.monotonic()
-                ms = int((time.monotonic() - t0) * 1000)
+            if should_break:
+                break
 
-                # Rate limit: set cooldown INSIDE lock so other callers see it
-                if resp.status_code in (403, 429):
+            # HTTP request OUTSIDE lock — allows concurrent LLM calls
+            t0 = time.monotonic()
+            try:
+                resp = await self._client.post("/chat/completions", json=payload)
+            except httpx.TimeoutException:
+                logger.warning("[LLM] Timeout attempt %d/%d", attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    continue
+                raise
+
+            ms = int((time.monotonic() - t0) * 1000)
+
+            # Rate limit: SHORT lock to update shared cooldown state
+            if resp.status_code in (403, 429):
+                async with self._call_lock:
                     retry_after = resp.headers.get("retry-after")
                     if retry_after:
                         try:
@@ -482,17 +491,18 @@ class LLMService:
                     self._rate_limited_until = time.monotonic() + wait
                     logger.warning("[LLM] Rate limited (%d), cooldown %.1fs (attempt %d/%d)",
                                    resp.status_code, wait, attempt + 1, max_retries)
-                    continue  # Next iteration sleeps inside lock via cooldown check
+                continue
 
-                # GigaChat 401: token expired mid-session — refresh and retry once
-                if resp.status_code == 401 and self._is_gigachat and not retried_auth:
+            # GigaChat 401: token expired mid-session — refresh and retry once
+            if resp.status_code == 401 and self._is_gigachat and not retried_auth:
+                async with self._call_lock:
                     logger.info("[LLM] GigaChat 401, refreshing token...")
                     await self._refresh_gigachat_token()
                     self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
-                    retried_auth = True
-                    continue
+                retried_auth = True
+                continue
 
-            # Success (outside lock)
+            # Success
             logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
             resp.raise_for_status()
             data = resp.json()
