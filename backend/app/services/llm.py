@@ -1,4 +1,4 @@
-"""LLM service v3: Groq (default) / Ollama, Russian prompts, retry with backoff."""
+"""LLM service v4: GigaChat (cloud) / Ollama (local GPU), Russian prompts, retry with backoff."""
 
 import asyncio
 import json
@@ -423,7 +423,7 @@ class LLMService:
             ],
             "temperature": temperature,
         }
-        if json_mode and not self._is_ollama:
+        if json_mode:
             payload["response_format"] = {"type": "json_object"}
         if not json_mode:
             payload["max_tokens"] = 500

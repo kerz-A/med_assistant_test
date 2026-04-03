@@ -5,13 +5,13 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     # LLM
-    llm_provider: str = "groq"
+    llm_provider: str = "gigachat"
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     ollama_base_url: str = "http://ollama:11434"
-    ollama_model: str = "qwen2.5:3b"
+    ollama_model: str = "qwen2.5:14b"
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     deepseek_api_key: str = ""
@@ -24,9 +24,6 @@ class Settings(BaseSettings):
     whisper_device: str = "auto"
     whisper_compute_type: str = "float16"
     whisper_beam_size: int = 3
-
-    # Pyannote
-    hf_token: str = ""
 
     # Processing
     processing_interval_seconds: int = 8

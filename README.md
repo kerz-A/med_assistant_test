@@ -105,7 +105,7 @@ LLM получает протокол и контекст диалога, ген
 | ASR | faster-whisper medium (~1.5 ГБ) | Транскрипция русской речи, beam_size=5 | ~0.5-1с/сегмент | ~3-5с/сегмент |
 | Speaker ID | ECAPA-TDNN SpeechBrain (~120 МБ) | Cosine similarity голосовых эмбеддингов | ~20мс | ~100-200мс |
 | LLM (облако) | GigaChat-2-Max | Extraction + суммаризация + финализация | 0 (API) | 0 (API) |
-| LLM (fallback) | Ollama qwen2.5:3b | Резервный при отказе облака (при наличии GPU) | ~2 ГБ VRAM | медленно |
+| LLM (локальный) | Ollama (qwen2.5:14b+) | Полностью автономная работа без интернета | ~10 ГБ VRAM | медленно |
 
 **Минимальные требования GPU**: ~2 ГБ VRAM (Whisper medium + VAD + ECAPA с int8_float32). Рекомендуется 4+ ГБ VRAM для float16 и запаса при пиковой нагрузке.
 
@@ -113,16 +113,11 @@ LLM получает протокол и контекст диалога, ген
 
 ## Выбор LLM-провайдера
 
-### GigaChat-2-Max (рекомендовано)
-
-Основной провайдер. Причины выбора:
+### Вариант A: GigaChat (облачный, рекомендовано)
 
 - **Оплата из РФ** — российские карты (Mir, SberPay), юрлица, ИП
-- **Нет RPM/TPM лимитов** — ограничение только по concurrency (1 поток на free tier, совместимо с архитектурой через `asyncio.Lock`)
-- **Оптимизирован для русского** — обучена на русскоязычных данных, понимает медицинскую терминологию
-- **Медицинская диагностика** — 62.5% точность МКБ-10 (неверные диагнозы обычно в правильной категории)
-
-Настройка:
+- **Нет RPM/TPM лимитов** — ограничение только по concurrency (1 поток на free tier)
+- **Оптимизирован для русского** — понимает медицинскую терминологию, МКБ-10
 
 ```env
 LLM_PROVIDER=gigachat
@@ -132,19 +127,29 @@ GIGACHAT_MODEL=GigaChat-2-Max
 
 Получение ключа: [developers.sber.ru](https://developers.sber.ru) → Создать проект → Подключить GigaChat API → Скопировать Authorization Key. Freemium: 1M токенов/год бесплатно (~100 сессий).
 
-**Особенности интеграции**: OAuth токен (30 мин TTL) — автоматическое обновление при 401, self-signed SSL обрабатывается в коде.
+**Особенности**: OAuth токен (30 мин TTL) — автоматическое обновление при 401, self-signed SSL обрабатывается в коде.
 
-### Протестированные альтернативы
+### Вариант B: Ollama (локальный, без интернета)
 
-| Провайдер | Конфигурация | Проблема |
-|-----------|-------------|----------|
-| **Groq** (free) | `LLM_PROVIDER=groq` | 6,000 TPM — 3-й вызов за сессию уже получает 429 |
-| **OpenRouter** (free) | `LLM_PROVIDER=openrouter` | 50 запросов/день — 2 сценария исчерпывают лимит |
-| **DeepSeek** | `LLM_PROVIDER=deepseek` | Хорошее качество, $0.28/M tok, но оплата из РФ затруднена |
-| **OpenAI** | `LLM_PROVIDER=openai` | GPT-4o-mini, наивысшее качество, но дороже и требует зарубежную карту |
-| **Ollama** (локально) | `LLM_PROVIDER=ollama` | DA=0% (модель 3B не знает МКБ-10), 30-120с на запрос при shared GPU |
+Полностью автономная работа на собственном GPU. Не требует API-ключей и интернета.
 
-LLM работает через API — локальная GPU-память не нужна (кроме Ollama). Добавьте `--no-deps backend frontend` чтобы не запускать контейнер Ollama.
+```env
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_MODEL=qwen2.5:14b
+```
+
+**Рекомендуемые модели:**
+
+| Модель | VRAM | Качество | Скорость |
+|--------|------|----------|----------|
+| `qwen2.5:14b` | ~10 ГБ | Хорошее (рекомендовано) | ~5-15с/запрос |
+| `qwen2.5:7b` | ~5 ГБ | Среднее | ~3-8с/запрос |
+| `qwen2.5:3b` | ~2 ГБ | Низкое (не знает МКБ-10) | ~1-3с/запрос |
+
+**Требования**: GPU с достаточным VRAM для выбранной модели + ~2 ГБ для Whisper. Модель автоматически скачивается при первом запуске.
+
+> **Важно**: при локальном режиме Ollama — это единственный LLM, fallback отсутствует. При облачном режиме (GigaChat) Ollama автоматически используется как fallback при сбоях API.
 
 ---
 
@@ -155,7 +160,7 @@ LLM работает через API — локальная GPU-память не
 1. **Retry с cooldown внутри Lock**: при 429 — экспоненциальный backoff (до 8с), cooldown timestamp виден всем concurrent вызовам через `asyncio.Lock`
 2. **GigaChat 401 auto-refresh**: при протухшем токене — автоматическое обновление OAuth и повтор запроса (один раз)
 3. **Confirm only on success**: удаление из pending-очереди только после успешного LLM-ответа. При ошибке utterances остаются и обрабатываются в следующем цикле
-4. **Ollama fallback**: при исчерпании retry облачного провайдера — автоматический вызов к локальному Ollama. Качество ниже, но данные не теряются
+4. **Ollama fallback**: при облачном LLM — автоматический вызов к локальному Ollama при исчерпании retry. Качество ниже, но данные не теряются
 5. **Финализация компенсирует**: даже если инкрементальная extraction пропустила данные, финализация видит весь контекст и компенсирует пробелы
 
 ---
@@ -177,17 +182,20 @@ LLM работает через API — локальная GPU-память не
 |--------|------|----------|
 | `backend` | 8000 | FastAPI + ML модели (Whisper, VAD, ECAPA-TDNN) + LLM клиент |
 | `frontend` | 3000 | TypeScript/Vite UI для врача, Nginx reverse proxy |
-| `ollama` | — | Локальный LLM fallback (qwen2.5:3b), только внутри Docker-сети |
+| `ollama` | — | Локальный LLM (qwen2.5:14b), только внутри Docker-сети |
 
 ```bash
-# Облачный LLM — без Ollama:
+# GigaChat (облачный) — без Ollama:
 docker compose up --build --no-deps backend frontend
 
-# С Ollama fallback:
+# GigaChat + Ollama fallback:
+docker compose up --build
+
+# Ollama (полностью локальный):
 docker compose up --build
 
 # С GPU:
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build --no-deps backend frontend
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 
 # Логи бэкенда:
 docker compose logs -f backend
@@ -307,7 +315,7 @@ python evaluate_test.py results/
 - **Speaker ID на одном поле**: при одинаковых голосах (два мужчины / две женщины) точность SA падает с ~88% до ~75% — ECAPA-TDNN эмбеддинги слишком похожи
 - **GigaChat double braces**: GigaChat иногда оборачивает JSON в `{{ }}` — парсер автоматически исправляет
 - **GigaChat BP формат**: возвращает давление как "150/95 мм рт. ст." — парсер извлекает числа через regex
-- **Ollama на shared GPU**: конкурирует с Whisper за VRAM, время ответа 30-120с. На выделенном GPU стабильнее
+- **Ollama + Whisper на одном GPU**: конкурируют за VRAM. Рекомендуется GPU с 12+ ГБ VRAM для qwen2.5:14b + Whisper medium
 - **CPU-режим**: ASR в 3-5 раз медленнее реального времени, эффект "заполнения на лету" пропадает. Для тестирования работоспособности — достаточно
 
 ---
@@ -318,8 +326,9 @@ python evaluate_test.py results/
 
 ```env
 # LLM
-LLM_PROVIDER=gigachat          # gigachat | deepseek | groq | openai | ollama
+LLM_PROVIDER=gigachat          # gigachat | ollama
 GIGACHAT_AUTH_KEY=...           # обязателен для gigachat
+OLLAMA_MODEL=qwen2.5:14b       # для ollama
 
 # Whisper ASR
 WHISPER_MODEL=medium            # tiny | base | small | medium | large-v3
