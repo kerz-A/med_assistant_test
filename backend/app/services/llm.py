@@ -423,7 +423,7 @@ class LLMService:
             ],
             "temperature": temperature,
         }
-        if json_mode:
+        if json_mode and not self._is_ollama:
             payload["response_format"] = {"type": "json_object"}
         if not json_mode:
             payload["max_tokens"] = 500
