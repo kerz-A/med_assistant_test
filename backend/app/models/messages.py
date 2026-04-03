@@ -11,6 +11,11 @@ class Utterance(BaseModel):
     start: float
     end: float
 
+    def format_role(self) -> str:
+        """Format as '[Врач]: text' or '[Пациент]: text' for LLM context."""
+        role = "Врач" if self.speaker == "doctor" else "Пациент"
+        return f"[{role}]: {self.text}"
+
 
 # --- Client → Server ---
 

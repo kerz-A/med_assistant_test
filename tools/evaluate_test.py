@@ -432,13 +432,11 @@ def print_report(metrics_list: list[ScenarioMetrics]):
     cds_scenarios = [m for m in metrics_list if m.cds.overall_score > 0]
     if cds_scenarios:
         print(f"\nClinical Decision Support Details:")
-        print(f"  {'Scenario':<35} {'Score':>5} {'Criteria':>10} {'Interrupted':>12}")
-        print(f"  {'-'*65}")
+        print(f"  {'Scenario':<35} {'Score':>5} {'Criteria':>10}")
+        print(f"  {'-'*53}")
         for m in cds_scenarios:
-            interrupted = m.cds.dialogue_analytics.get("doctor_interrupted_patient", "—")
             print(f"  {m.scenario_name[:34]:<35} {m.cds.overall_score:>4.1f}  "
-                  f"{m.cds.criteria_completed:>4}/{m.cds.criteria_total:<4} "
-                  f"{interrupted:>10}")
+                  f"{m.cds.criteria_completed:>4}/{m.cds.criteria_total:<4}")
         print()
         # Show quality criteria distribution
         all_scores = []

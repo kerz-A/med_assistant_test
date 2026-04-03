@@ -156,11 +156,7 @@ class SessionState:
         return filled
 
     def format_full_transcript(self) -> str:
-        lines = []
-        for u in self.transcript:
-            role = "Врач" if u.speaker == "doctor" else "Пациент"
-            lines.append(f"[{role}]: {u.text}")
-        return "\n".join(lines)
+        return "\n".join(u.format_role() for u in self.transcript)
 
     def format_patient_utterances(self) -> str:
         """Extract only patient utterances for summarization."""
