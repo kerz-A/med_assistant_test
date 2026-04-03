@@ -199,9 +199,7 @@ QUALITY_ANALYSIS_PROMPT = """\
 Все метрики 0 или 1:
 
 - doctor_showed_empathy: Врач проявил эмпатию/сочувствие к пациенту (0/1)
-- doctor_interrupted_patient: Врач перебивал пациента (0 или 1):
-  1 = врач НЕ перебивал, давал пациенту договорить
-  0 = врач перебивал пациента
+- doctor_interrupted_patient: Врач НЕ перебивал пациента, давал договорить (0/1)
 - patient_asked_questions: Пациент задавал вопросы (0/1)
 - doctor_used_medical_jargon: Врач использовал медицинский жаргон без пояснений (0/1)
 - doctor_confirmed_understanding: Врач уточнял, правильно ли понял пациента (0/1)
