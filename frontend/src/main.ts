@@ -41,7 +41,7 @@ const QC_LABELS: { key: keyof QualityCriteria; label: string }[] = [
 
 const DA_LABELS: { key: keyof DialogueAnalytics; label: string }[] = [
   { key: "doctor_showed_empathy", label: "Врач проявил эмпатию" },
-  { key: "doctor_interrupted_patient", label: "Врач перебивал пациента" },
+  { key: "doctor_interrupted_patient", label: "Врач не перебивал пациента" },
   { key: "patient_asked_questions", label: "Пациент задавал вопросы" },
   { key: "doctor_used_medical_jargon", label: "Использование мед. жаргона" },
   { key: "doctor_confirmed_understanding", label: "Подтверждение понимания" },
