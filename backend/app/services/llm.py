@@ -118,6 +118,50 @@ PATIENT_SUMMARY_PROMPT = """\
 
 Ответь на русском, 15-20 предложений. Пиши от третьего лица ("Пациент жалуется на...")."""
 
+QUALITY_ANALYSIS_PROMPT = """\
+Ты — эксперт по оценке качества врачебных приёмов. Проанализируй транскрипт диалога врача с пациентом.
+
+═══ КРИТЕРИИ КАЧЕСТВА (0-2 балла каждый) ═══
+- greeting_and_contact: Приветствие, представление, установление контакта (0=нет, 1=частично, 2=полностью)
+- conversation_structure: Логичная структура беседы (0=хаотичная, 1=частично, 2=чёткая)
+- needs_identification: Выявление потребностей/ожиданий пациента (0=нет, 1=частично, 2=да)
+- current_complaints_identification: Выявление текущих жалоб (0=нет, 1=поверхностно, 2=подробно)
+- disease_history: Анамнез текущего заболевания (0=нет, 1=частично, 2=подробно)
+- general_medical_history: Хронические болезни, операции (0=нет, 1=частично, 2=подробно)
+- medication_history: Текущие лекарства (0=не спросил, 1=упомянул, 2=подробно)
+- family_history: Семейный анамнез (0=не спросил, 1=упомянул, 2=подробно)
+- prevention_and_risk_control: Образ жизни, курение, алкоголь, физ. активность (0=нет, 1=частично, 2=подробно)
+- treatment_planning: План лечения/обследований (0=нет, 1=частично, 2=подробный)
+- visit_closure: Подведение итогов, рекомендации, контрольный визит (0=нет, 1=частично, 2=полное)
+
+═══ АНАЛИТИКА ДИАЛОГА (0 или 1) ═══
+- doctor_showed_empathy: Врач проявил эмпатию/сочувствие к пациенту
+- doctor_interrupted_patient: Врач перебивал пациента
+- patient_asked_questions: Пациент задавал вопросы
+- doctor_used_medical_jargon: Врач использовал медицинский жаргон без пояснений
+- doctor_confirmed_understanding: Врач уточнял, правильно ли понял пациента
+- lifestyle_discussed: Обсуждался образ жизни (питание, сон, стресс, физ. активность)
+- allergies_discussed: Обсуждались аллергии
+- shared_decision_making: Совместное принятие решений о лечении
+- patient_compliance_assessment: Оценка приверженности пациента лечению
+- doctor_pacing: Врач соблюдал комфортный темп разговора
+
+Ответь СТРОГО JSON:
+{{
+  "quality_criteria": {{
+    "greeting_and_contact": 0, "conversation_structure": 0, "needs_identification": 0,
+    "current_complaints_identification": 0, "disease_history": 0, "general_medical_history": 0,
+    "medication_history": 0, "family_history": 0, "prevention_and_risk_control": 0,
+    "treatment_planning": 0, "visit_closure": 0
+  }},
+  "dialogue_analytics": {{
+    "doctor_showed_empathy": 0, "doctor_interrupted_patient": 0, "patient_asked_questions": 0,
+    "doctor_used_medical_jargon": 0, "doctor_confirmed_understanding": 0, "lifestyle_discussed": 0,
+    "allergies_discussed": 0, "shared_decision_making": 0, "patient_compliance_assessment": 0,
+    "doctor_pacing": 0
+  }}
+}}"""
+
 FINALIZATION_PROMPT = """\
 Ты — опытный врач. Сформируй заключение на основе данных пациента и разговора.
 Отвечай ТОЛЬКО на русском языке.
@@ -478,6 +522,18 @@ class LLMService:
         """Summarize all patient utterances into a compact medical narrative."""
         logger.info("[LLM] Summarizing patient speech (%d chars)...", len(patient_text))
         return await self._chat(PATIENT_SUMMARY_PROMPT, patient_text, json_mode=False)
+
+    # ---- Quality analysis ----
+
+    async def analyze_quality(self, transcript: str) -> dict:
+        """Analyze transcript for consultation quality criteria and dialogue analytics."""
+        logger.info("[LLM] Analyzing consultation quality...")
+        try:
+            raw = await self._chat(QUALITY_ANALYSIS_PROMPT, transcript, temperature=0.1)
+            return self._parse_json(raw) or {}
+        except Exception as e:
+            logger.error("[LLM] Quality analysis failed: %s", e)
+            return {}
 
     # ---- Finalization ----
 

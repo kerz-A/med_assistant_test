@@ -1,6 +1,6 @@
 import { AudioCapture } from "./audio-capture";
 import { WebSocketClient } from "./websocket-client";
-import type { Protocol, ExamData, Vitals } from "./websocket-client";
+import type { Protocol, ExamData, Vitals, QualityCriteria, DialogueAnalytics } from "./websocket-client";
 
 type Stage = "idle" | "calibrating" | "calibrated" | "recording" | "processing" | "stopped" | "finalizing" | "done";
 
@@ -23,6 +23,33 @@ const VITAL_FIELDS: { key: keyof Vitals; label: string; unit: string }[] = [
   { key: "pulse", label: "Пульс", unit: "уд/мин" },
   { key: "spo2", label: "SpO₂", unit: "%" },
   { key: "systolic_bp", label: "АД", unit: "" },
+];
+
+const QC_LABELS: { key: keyof QualityCriteria; label: string }[] = [
+  { key: "greeting_and_contact", label: "Приветствие и установление контакта" },
+  { key: "conversation_structure", label: "Структура разговора" },
+  { key: "needs_identification", label: "Выявление потребностей пациента" },
+  { key: "current_complaints_identification", label: "Выявление текущих жалоб" },
+  { key: "disease_history", label: "Анамнез текущего заболевания" },
+  { key: "general_medical_history", label: "Общий медицинский анамнез" },
+  { key: "medication_history", label: "Лекарственный анамнез" },
+  { key: "family_history", label: "Семейный анамнез" },
+  { key: "prevention_and_risk_control", label: "Профилактика и контроль факторов риска" },
+  { key: "treatment_planning", label: "Планирование лечения" },
+  { key: "visit_closure", label: "Заключение визита" },
+];
+
+const DA_LABELS: { key: keyof DialogueAnalytics; label: string }[] = [
+  { key: "doctor_showed_empathy", label: "Врач проявил эмпатию" },
+  { key: "doctor_interrupted_patient", label: "Врач перебивал пациента" },
+  { key: "patient_asked_questions", label: "Пациент задавал вопросы" },
+  { key: "doctor_used_medical_jargon", label: "Использование мед. жаргона" },
+  { key: "doctor_confirmed_understanding", label: "Подтверждение понимания" },
+  { key: "lifestyle_discussed", label: "Обсуждение образа жизни" },
+  { key: "allergies_discussed", label: "Обсуждение аллергий" },
+  { key: "shared_decision_making", label: "Совместное принятие решений" },
+  { key: "patient_compliance_assessment", label: "Оценка комплаентности" },
+  { key: "doctor_pacing", label: "Комфортный темп разговора" },
 ];
 
 class App {
@@ -268,6 +295,34 @@ class App {
           `).join("")}
         </div>
       </div>
+      <div class="proto-section cds-section">
+        <div class="proto-title">Система помощи принятия врачебного решения</div>
+        <div class="cds-layout">
+          <div class="cds-col">
+            <div class="cds-subtitle">Критерии качества</div>
+            ${QC_LABELS.map(q => `
+              <div class="cds-row" id="qc-${q.key}">
+                <span class="cds-row-label">${q.label}</span>
+                <span class="cds-badge cds-score-na" id="qc-val-${q.key}">—</span>
+              </div>
+            `).join("")}
+          </div>
+          <div class="cds-col">
+            <div class="cds-score-block" id="cds-score-block">
+              <div class="cds-score-value" id="cds-overall-score">0.0</div>
+              <div class="cds-score-label">общая оценка</div>
+              <div class="cds-completed" id="cds-completed">0 / 11 критериев</div>
+            </div>
+            <div class="cds-subtitle">Аналитика диалога</div>
+            ${DA_LABELS.map(d => `
+              <div class="cds-row" id="da-${d.key}">
+                <span class="cds-row-label">${d.label}</span>
+                <span class="cds-analytics-icon" id="da-val-${d.key}">—</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      </div>
     `;
 
     // Edit handler — send changes to server
@@ -324,6 +379,40 @@ class App {
           valEl.classList.remove("empty");
           card.classList.add("updated");
           setTimeout(() => card.classList.remove("updated"), 1500);
+        }
+      }
+    }
+
+    // Clinical Decision Support
+    const cds = proto.clinical_decision_support;
+    if (cds) {
+      const qc = cds.quality_criteria ?? {};
+      for (const q of QC_LABELS) {
+        const badge = document.getElementById(`qc-val-${q.key}`);
+        if (!badge) continue;
+        const val = qc[q.key];
+        if (val != null) {
+          badge.textContent = String(val);
+          badge.className = `cds-badge cds-score-${val}`;
+        }
+      }
+
+      const eq = cds.examination_quality;
+      if (eq) {
+        const scoreEl = document.getElementById("cds-overall-score");
+        const completedEl = document.getElementById("cds-completed");
+        if (scoreEl) scoreEl.textContent = (eq.overall_score ?? 0).toFixed(1);
+        if (completedEl) completedEl.textContent = `${eq.criteria_completed ?? 0} / ${eq.criteria_total ?? 11} критериев`;
+      }
+
+      const da = cds.dialogue_analytics ?? {};
+      for (const d of DA_LABELS) {
+        const icon = document.getElementById(`da-val-${d.key}`);
+        if (!icon) continue;
+        const val = da[d.key];
+        if (val != null) {
+          icon.textContent = val ? "\u2714" : "\u2718";
+          icon.className = `cds-analytics-icon ${val ? "da-yes" : "da-no"}`;
         }
       }
     }

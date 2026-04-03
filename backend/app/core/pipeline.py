@@ -234,22 +234,43 @@ class ProcessingPipeline:
             session.protocol, transcript,
         )
 
-        # Quality metrics
-        filled = session.get_filled_fields()
+        # Quality analysis via LLM (uses full transcript for accurate assessment)
+        full_transcript = session.format_full_transcript()
+        quality_data = await self.llm.analyze_quality(full_transcript)
+
         cds = session.protocol.clinical_decision_support
-        cds.quality_criteria.data_completeness = min(2, len(filled) // 3)
-        cds.quality_criteria.complaints_quality = 2 if session.protocol.exam_data.complaints else 0
-        cds.quality_criteria.anamnesis_quality = 2 if session.protocol.exam_data.anamnesis else 0
-        cds.quality_criteria.vitals_collected = 2 if session.protocol.vitals.height_cm else 0
-        cds.quality_criteria.life_history_quality = 2 if session.protocol.exam_data.life_anamnesis else 0
-        cds.examination_quality.overall_score = sum([
-            cds.quality_criteria.data_completeness,
-            cds.quality_criteria.complaints_quality,
-            cds.quality_criteria.anamnesis_quality,
-            cds.quality_criteria.vitals_collected,
-            cds.quality_criteria.life_history_quality,
-        ]) / 2.0
+        if "quality_criteria" in quality_data:
+            for field, value in quality_data["quality_criteria"].items():
+                if hasattr(cds.quality_criteria, field):
+                    try:
+                        setattr(cds.quality_criteria, field, min(2, max(0, int(value))))
+                    except (ValueError, TypeError):
+                        pass
+
+        if "dialogue_analytics" in quality_data:
+            for field, value in quality_data["dialogue_analytics"].items():
+                if hasattr(cds.dialogue_analytics, field):
+                    setattr(cds.dialogue_analytics, field, 1 if value else 0)
+
+        # Calculate overall score on 5-point scale
+        qc = cds.quality_criteria
+        scores = [
+            qc.greeting_and_contact, qc.conversation_structure, qc.needs_identification,
+            qc.current_complaints_identification, qc.disease_history, qc.general_medical_history,
+            qc.medication_history, qc.family_history, qc.prevention_and_risk_control,
+            qc.treatment_planning, qc.visit_closure,
+        ]
+        total = sum(scores)
+        max_total = 11 * 2  # 22
+        cds.examination_quality.criteria_completed = sum(1 for s in scores if s > 0)
+        cds.examination_quality.criteria_total = 11
+        cds.examination_quality.overall_score = round((total / max_total) * 5, 1)
         cds.examination_quality.recording_duration_sec = session.audio_buffer.real_total_duration
+
+        logger.info("[PIPELINE] Quality: score=%.1f/5 criteria=%d/%d",
+                    cds.examination_quality.overall_score,
+                    cds.examination_quality.criteria_completed,
+                    cds.examination_quality.criteria_total)
 
         time_ms = int((time.monotonic() - t0) * 1000)
         logger.info("[PIPELINE] Finalization complete: %dms | diagnosis=%s",
