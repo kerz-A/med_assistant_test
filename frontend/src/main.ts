@@ -100,22 +100,35 @@ class App {
 
   private setStage(s: Stage): void {
     this.stage = s;
+
+    // Button visibility: show buttons relevant to current AND transitioning stages
+    this.btnCalibrate.classList.toggle("hidden", s !== "idle");
+    this.btnStopCalibrate.classList.toggle("hidden", s !== "calibrating");
+    this.btnRecord.classList.toggle("hidden", s !== "calibrated");
+    this.btnStop.classList.toggle("hidden", s !== "recording");
+    // Finalize button stays visible during stopped, finalizing, and done
+    this.btnFinalize.classList.toggle("hidden", !["stopped", "finalizing", "done"].includes(s));
+
+    // Button states: loading during transitions, enabled when actionable
     this.clearAllBtnLoading();
-    // Buttons
     this.btnCalibrate.disabled = s !== "idle";
     this.btnStopCalibrate.disabled = s !== "calibrating";
     this.btnRecord.disabled = s !== "calibrated";
     this.btnStop.disabled = s !== "recording";
-    this.btnFinalize.disabled = s !== "stopped";
 
-    this.btnCalibrate.classList.toggle("hidden", s !== "idle");
-    this.btnStopCalibrate.classList.toggle("hidden", s !== "calibrating");
-    this.btnRecord.classList.toggle("hidden", !["calibrated"].includes(s));
-    this.btnStop.classList.toggle("hidden", s !== "recording");
-    this.btnFinalize.classList.toggle("hidden", !["stopped", "done"].includes(s));
+    // Finalize: loading during finalizing, disabled when done
+    if (s === "finalizing") {
+      this.setBtnLoading(this.btnFinalize, "Формирование...");
+    } else if (s === "done") {
+      this.btnFinalize.disabled = true;
+      const label = this.btnFinalize.querySelector(".btn-label");
+      if (label) label.textContent = "✅ Заключение готово";
+    } else {
+      this.btnFinalize.disabled = s !== "stopped";
+    }
 
     this.calibrationHint.classList.toggle("visible", s === "calibrating");
-    this.processingEl.classList.toggle("visible", s === "processing" || s === "finalizing");
+    this.processingEl.classList.toggle("visible", s === "processing");
 
     const labels: Record<string, string> = {
       idle: "Готов к работе",
@@ -227,7 +240,6 @@ class App {
   }
 
   private finalize(): void {
-    this.setBtnLoading(this.btnFinalize, "Формирование...");
     this.ws.send({ type: "finalize" });
     this.setStage("finalizing");
   }
