@@ -180,7 +180,8 @@ async def main():
     # Select scenarios
     scenarios = SCENARIOS
     if args.scenarios:
-        scenarios = [s for s in SCENARIOS if s["id"] in args.scenarios]
+        by_id = {s["id"]: s for s in SCENARIOS}
+        scenarios = [by_id[sid] for sid in args.scenarios if sid in by_id]
     elif args.hard_only:
         scenarios = [s for s in SCENARIOS if s["id"] in SAME_GENDER_IDS]
 
