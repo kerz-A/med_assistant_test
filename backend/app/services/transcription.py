@@ -61,11 +61,7 @@ class TranscriptionService:
         segments_gen, info = self._model.transcribe(
             audio,
             language="ru",
-            vad_filter=True,
-            vad_parameters={
-                "min_silence_duration_ms": 500,
-                "speech_pad_ms": 200,
-            },
+            vad_filter=False,  # Audio already segmented by Silero VAD — no need for double VAD
             beam_size=settings.whisper_beam_size,
             best_of=1,
             without_timestamps=False,

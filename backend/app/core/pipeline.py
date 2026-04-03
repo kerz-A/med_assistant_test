@@ -230,13 +230,13 @@ class ProcessingPipeline:
         else:
             transcript = session.format_full_transcript()
 
-        session.protocol = await self.llm.finalize_protocol(
-            session.protocol, transcript,
-        )
-
-        # Quality analysis via LLM (uses full transcript for accurate assessment)
+        # Run finalization + quality analysis in parallel (independent tasks)
         full_transcript = session.format_full_transcript()
-        quality_data = await self.llm.analyze_quality(full_transcript)
+        protocol_result, quality_data = await asyncio.gather(
+            self.llm.finalize_protocol(session.protocol, transcript),
+            self.llm.analyze_quality(full_transcript),
+        )
+        session.protocol = protocol_result
 
         cds = session.protocol.clinical_decision_support
         if "quality_criteria" in quality_data:
