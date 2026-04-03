@@ -14,6 +14,8 @@ from functools import partial
 import numpy as np
 import torch
 
+from ..config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -106,7 +108,7 @@ class SpeakerIDService:
 
     async def extract_embedding(self, audio: np.ndarray) -> np.ndarray:
         """Extract speaker embedding (async wrapper)."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, partial(self._extract_embedding_sync, audio)
         )
@@ -134,7 +136,7 @@ class SpeakerIDService:
         if patient_ref is None:
             # Only doctor known — check if this sounds like doctor
             sim = _cosine_similarity(embedding, doctor_ref)
-            if sim > 0.5:
+            if sim > settings.speaker_doctor_only_threshold:
                 return "doctor", sim
             else:
                 return "patient", 1.0 - sim

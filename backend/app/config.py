@@ -48,8 +48,16 @@ class Settings(BaseSettings):
 
     # Speaker ID
     speaker_similarity_threshold: float = 0.1  # min diff between doctor/patient cosine sims
+    speaker_doctor_only_threshold: float = 0.5  # cosine sim to classify as doctor when only doctor profile known
     calibration_same_speaker_threshold: float = 0.75  # cosine sim above this = same speaker during calibration
     max_concurrent_segments: int = 0  # 0=auto (1 CPU, 2 GPU), or set manually
+
+    # LLM HTTP
+    llm_max_retries: int = 5
+    llm_timeout_seconds: float = 60.0       # primary LLM request timeout
+    llm_timeout_ollama_seconds: float = 120.0  # Ollama (local, slower)
+    llm_timeout_pull_seconds: float = 600.0    # model pull timeout
+    llm_context_window_utterances: int = 15    # recent utterances as LLM context
 
     # Server
     backend_host: str = "0.0.0.0"

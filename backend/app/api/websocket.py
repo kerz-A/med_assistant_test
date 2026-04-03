@@ -250,11 +250,8 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                         # Flush remaining pending utterances through LLM
                         if session.has_pending_utterances():
                             pending = session.peek_pending_utterances()
-                            recent = session.transcript[-15:]
-                            context = "\n".join(
-                                f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
-                                for u in recent
-                            )
+                            recent = session.transcript[-settings.llm_context_window_utterances:]
+                            context = "\n".join(u.format_role() for u in recent)
                             try:
                                 session.protocol = await pipeline.llm.extract_protocol_data(
                                     session.protocol, pending, context,

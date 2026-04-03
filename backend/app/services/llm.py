@@ -296,7 +296,7 @@ class LLMService:
             headers["Authorization"] = f"Bearer {settings.llm_api_key}"
         self._client = httpx.AsyncClient(
             base_url=settings.llm_base_url, headers=headers,
-            timeout=120.0 if self._is_ollama else 60.0,
+            timeout=settings.llm_timeout_ollama_seconds if self._is_ollama else settings.llm_timeout_seconds,
             verify=not self._is_gigachat,
         )
         logger.info("[LLM] Initialized: provider=%s model=%s", settings.llm_provider, settings.llm_model)
@@ -306,7 +306,7 @@ class LLMService:
             self._fallback_client = httpx.AsyncClient(
                 base_url=f"{settings.ollama_base_url}/v1",
                 headers={"Content-Type": "application/json"},
-                timeout=120.0,
+                timeout=settings.llm_timeout_ollama_seconds,
             )
             logger.info("[LLM] Fallback initialized: ollama/%s at %s",
                         settings.ollama_model, settings.ollama_base_url)
@@ -321,7 +321,7 @@ class LLMService:
         if not self._is_ollama:
             return
         try:
-            async with httpx.AsyncClient(timeout=600.0) as client:
+            async with httpx.AsyncClient(timeout=settings.llm_timeout_pull_seconds) as client:
                 resp = await client.post(
                     f"{settings.ollama_base_url}/api/pull",
                     json={"name": settings.llm_model, "stream": False},
@@ -336,7 +336,7 @@ class LLMService:
     async def pull_fallback_model(self) -> None:
         """Pull Ollama fallback model (called at startup when primary is Groq)."""
         try:
-            async with httpx.AsyncClient(timeout=600.0) as client:
+            async with httpx.AsyncClient(timeout=settings.llm_timeout_pull_seconds) as client:
                 resp = await client.post(
                     f"{settings.ollama_base_url}/api/pull",
                     json={"name": settings.ollama_model, "stream": False},
@@ -428,7 +428,7 @@ class LLMService:
         if not json_mode:
             payload["max_tokens"] = 500
 
-        max_retries = 5
+        max_retries = settings.llm_max_retries
         retry_start = time.monotonic()
         resp = None
         retried_auth = False
@@ -579,10 +579,7 @@ class LLMService:
     async def extract_protocol_data(
         self, current: MedicalProtocol, utterances: list[Utterance], context: str,
     ) -> MedicalProtocol:
-        new_text = "\n".join(
-            f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
-            for u in utterances
-        )
+        new_text = "\n".join(u.format_role() for u in utterances)
         user_prompt = (
             f"ТЕКУЩИЙ ПРОТОКОЛ:\n{current.model_dump_json(indent=2)}\n\n"
             f"КОНТЕКСТ (последние реплики):\n{context}\n\n"

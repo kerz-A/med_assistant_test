@@ -116,7 +116,7 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
 
     try:
         async with websockets.connect(url, ping_interval=30, ping_timeout=300,
-                                       max_size=2**23) as ws:
+                                       max_size=10 * 1024 * 1024) as ws:
             # Stage 1: Calibration
             await ws.send(json.dumps({"type": "start_calibration", "config": {"num_speakers": 2}}))
             await asyncio.sleep(0.3)

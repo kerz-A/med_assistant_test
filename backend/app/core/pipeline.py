@@ -93,11 +93,9 @@ class ProcessingPipeline:
             if session.should_extract_protocol():
                 pending = session.peek_pending_utterances()
                 t0 = time.monotonic()
-                recent = session.transcript[-15:] if len(session.transcript) > 15 else session.transcript
-                context = "\n".join(
-                    f"[{'Врач' if u.speaker == 'doctor' else 'Пациент'}]: {u.text}"
-                    for u in recent
-                )
+                n = settings.llm_context_window_utterances
+                recent = session.transcript[-n:] if len(session.transcript) > n else session.transcript
+                context = "\n".join(u.format_role() for u in recent)
                 try:
                     session.protocol = await self.llm.extract_protocol_data(
                         session.protocol, pending, context,

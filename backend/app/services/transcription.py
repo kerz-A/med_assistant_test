@@ -53,7 +53,7 @@ class TranscriptionService:
             raise RuntimeError("Whisper model not loaded. Call load_model() first.")
 
         logger.info("[ASR] Transcribing: %d samples (%.1fs)", len(audio), len(audio) / 16000)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(self._transcribe_sync, audio))
 
     def _transcribe_sync(self, audio: np.ndarray) -> list[TranscriptSegment]:
