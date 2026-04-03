@@ -100,6 +100,7 @@ class App {
 
   private setStage(s: Stage): void {
     this.stage = s;
+    this.clearAllBtnLoading();
     // Buttons
     this.btnCalibrate.disabled = s !== "idle";
     this.btnStopCalibrate.disabled = s !== "calibrating";
@@ -199,6 +200,7 @@ class App {
   }
 
   private stopCalibration(): void {
+    this.setBtnLoading(this.btnStopCalibrate, "Обработка...");
     this.audio.stop();
     this.ws.send({ type: "stop_calibration" });
   }
@@ -218,12 +220,14 @@ class App {
   }
 
   private stopRecording(): void {
+    this.setBtnLoading(this.btnStop, "Остановка...");
     this.audio.stop();
     this.ws.send({ type: "stop_recording" });
     if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; }
   }
 
   private finalize(): void {
+    this.setBtnLoading(this.btnFinalize, "Формирование...");
     this.ws.send({ type: "finalize" });
     this.setStage("finalizing");
   }
@@ -428,6 +432,27 @@ class App {
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${m.toString().padStart(2,"0")}:${s.toString().padStart(2,"0")}`;
+  }
+
+  private setBtnLoading(btn: HTMLButtonElement, text: string): void {
+    btn.classList.add("btn-loading");
+    btn.disabled = true;
+    const label = btn.querySelector(".btn-label");
+    if (label) {
+      btn.dataset.origLabel = label.textContent || "";
+      label.textContent = text;
+    }
+  }
+
+  private clearAllBtnLoading(): void {
+    for (const btn of [this.btnCalibrate, this.btnStopCalibrate, this.btnRecord, this.btnStop, this.btnFinalize]) {
+      btn.classList.remove("btn-loading");
+      const label = btn.querySelector(".btn-label");
+      if (label && btn.dataset.origLabel) {
+        label.textContent = btn.dataset.origLabel;
+        delete btn.dataset.origLabel;
+      }
+    }
   }
 
   private esc(t: string): string {
