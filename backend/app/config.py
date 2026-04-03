@@ -47,6 +47,7 @@ class Settings(BaseSettings):
 
     # LLM call pacing
     llm_min_gap_seconds: float = 0.0  # min gap between LLM calls (0=no delay for GigaChat, 2.0 for Groq)
+    llm_max_concurrent: int = 1  # max concurrent HTTP requests to LLM (1 for GigaChat free tier)
 
     # Speaker ID
     speaker_similarity_threshold: float = 0.1  # min diff between doctor/patient cosine sims
