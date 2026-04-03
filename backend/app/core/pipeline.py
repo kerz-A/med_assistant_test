@@ -243,7 +243,7 @@ class ProcessingPipeline:
             for field, value in quality_data["quality_criteria"].items():
                 if hasattr(cds.quality_criteria, field):
                     try:
-                        setattr(cds.quality_criteria, field, min(2, max(0, int(value))))
+                        setattr(cds.quality_criteria, field, min(2, max(0, int(float(value)))))
                     except (ValueError, TypeError):
                         pass
 
