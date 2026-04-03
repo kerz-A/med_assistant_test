@@ -250,14 +250,7 @@ class ProcessingPipeline:
         if "dialogue_analytics" in quality_data:
             for field, value in quality_data["dialogue_analytics"].items():
                 if hasattr(cds.dialogue_analytics, field):
-                    if field == "doctor_interrupted_patient":
-                        # 0-2 scale: 2=не перебивал, 1=частично, 0=перебивал
-                        try:
-                            setattr(cds.dialogue_analytics, field, min(2, max(0, int(value))))
-                        except (ValueError, TypeError):
-                            setattr(cds.dialogue_analytics, field, 0)
-                    else:
-                        setattr(cds.dialogue_analytics, field, 1 if value else 0)
+                    setattr(cds.dialogue_analytics, field, 1 if value else 0)
 
         # Calculate overall score on 5-point scale
         qc = cds.quality_criteria
