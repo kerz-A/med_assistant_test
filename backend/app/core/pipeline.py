@@ -88,7 +88,7 @@ class ProcessingPipeline:
 
         # 3. Batched protocol extraction — accumulate utterances, extract every 5 or 20s
         if session.stage == SessionStage.RECORDING:
-            session.add_pending_utterance(utterance)
+            await session.add_pending_utterance(utterance)
 
             if session.should_extract_protocol():
                 pending = session.peek_pending_utterances()
@@ -102,7 +102,7 @@ class ProcessingPipeline:
                     session.protocol = await self.llm.extract_protocol_data(
                         session.protocol, pending, context,
                     )
-                    session.confirm_extraction(len(pending))
+                    await session.confirm_extraction(len(pending))
                     extract_ms = int((time.monotonic() - t0) * 1000)
                     logger.info("[PIPELINE] Protocol extraction: %dms (%d utterances batched)",
                                 extract_ms, len(pending))
@@ -212,31 +212,72 @@ class ProcessingPipeline:
         )
 
     async def finalize(self, session: SessionState) -> int:
-        """Run full finalization: generate diagnosis + treatment + recommendations."""
+        """Run full finalization: generate diagnosis + treatment + recommendations.
+
+        For long sessions (>50 utterances): summarize patient speech first,
+        then finalize with compact summary instead of full transcript.
+        """
         t0 = time.monotonic()
         logger.info("[PIPELINE] Finalizing session=%s | transcript=%d utterances",
                      session.session_id, len(session.transcript))
 
-        session.protocol = await self.llm.finalize_protocol(
-            session.protocol, session.format_full_transcript(),
-        )
+        if len(session.transcript) > 50:
+            patient_text = session.format_patient_utterances()
+            summary = await self.llm.summarize_patient_speech(patient_text)
+            transcript = f"[РЕЗЮМЕ СЛОВ ПАЦИЕНТА]\n{summary}"
+            logger.info("[PIPELINE] Using summarized transcript (%d chars) instead of full (%d utterances)",
+                        len(transcript), len(session.transcript))
+        else:
+            transcript = session.format_full_transcript()
 
-        # Quality metrics
-        filled = session.get_filled_fields()
+        # Run finalization + quality analysis in parallel (independent tasks)
+        full_transcript = session.format_full_transcript()
+        protocol_result, quality_data = await asyncio.gather(
+            self.llm.finalize_protocol(session.protocol, transcript),
+            self.llm.analyze_quality(full_transcript),
+        )
+        session.protocol = protocol_result
+
         cds = session.protocol.clinical_decision_support
-        cds.quality_criteria.data_completeness = min(2, len(filled) // 3)
-        cds.quality_criteria.complaints_quality = 2 if session.protocol.exam_data.complaints else 0
-        cds.quality_criteria.anamnesis_quality = 2 if session.protocol.exam_data.anamnesis else 0
-        cds.quality_criteria.vitals_collected = 2 if session.protocol.vitals.height_cm else 0
-        cds.quality_criteria.life_history_quality = 2 if session.protocol.exam_data.life_anamnesis else 0
-        cds.examination_quality.overall_score = sum([
-            cds.quality_criteria.data_completeness,
-            cds.quality_criteria.complaints_quality,
-            cds.quality_criteria.anamnesis_quality,
-            cds.quality_criteria.vitals_collected,
-            cds.quality_criteria.life_history_quality,
-        ]) / 2.0
+        if "quality_criteria" in quality_data:
+            for field, value in quality_data["quality_criteria"].items():
+                if hasattr(cds.quality_criteria, field):
+                    try:
+                        setattr(cds.quality_criteria, field, min(2, max(0, int(value))))
+                    except (ValueError, TypeError):
+                        pass
+
+        if "dialogue_analytics" in quality_data:
+            for field, value in quality_data["dialogue_analytics"].items():
+                if hasattr(cds.dialogue_analytics, field):
+                    if field == "doctor_interrupted_patient":
+                        # 0-2 scale: 2=не перебивал, 1=частично, 0=перебивал
+                        try:
+                            setattr(cds.dialogue_analytics, field, min(2, max(0, int(value))))
+                        except (ValueError, TypeError):
+                            setattr(cds.dialogue_analytics, field, 0)
+                    else:
+                        setattr(cds.dialogue_analytics, field, 1 if value else 0)
+
+        # Calculate overall score on 5-point scale
+        qc = cds.quality_criteria
+        scores = [
+            qc.greeting_and_contact, qc.conversation_structure, qc.needs_identification,
+            qc.current_complaints_identification, qc.disease_history, qc.general_medical_history,
+            qc.medication_history, qc.family_history, qc.prevention_and_risk_control,
+            qc.treatment_planning, qc.visit_closure,
+        ]
+        total = sum(scores)
+        max_total = 11 * 2  # 22
+        cds.examination_quality.criteria_completed = sum(1 for s in scores if s > 0)
+        cds.examination_quality.criteria_total = 11
+        cds.examination_quality.overall_score = round((total / max_total) * 5, 1)
         cds.examination_quality.recording_duration_sec = session.audio_buffer.real_total_duration
+
+        logger.info("[PIPELINE] Quality: score=%.1f/5 criteria=%d/%d",
+                    cds.examination_quality.overall_score,
+                    cds.examination_quality.criteria_completed,
+                    cds.examination_quality.criteria_total)
 
         time_ms = int((time.monotonic() - t0) * 1000)
         logger.info("[PIPELINE] Finalization complete: %dms | diagnosis=%s",

@@ -7,6 +7,7 @@ Metrics:
   FVA — Field Value Accuracy (% of filled fields with correct values)
   DA  — Diagnosis Accuracy (ICD-10 code matches, binary)
   OQS — Overall Quality Score (weighted combination)
+  CDS — Clinical Decision Support Score (0-5, quality of consultation assessment)
 
 Usage:
     python evaluate_test.py results/01_cardiology.json
@@ -52,6 +53,16 @@ SAME_GENDER_SCENARIOS = {"03_neurology", "04_pulmonology", "08_urology", "09_ped
 
 
 @dataclass
+class CDSMetrics:
+    """Clinical Decision Support metrics."""
+    overall_score: float = 0.0       # 0-5 scale
+    criteria_completed: int = 0      # how many of 11 criteria scored > 0
+    criteria_total: int = 11
+    quality_criteria: dict = field(default_factory=dict)
+    dialogue_analytics: dict = field(default_factory=dict)
+
+
+@dataclass
 class ScenarioMetrics:
     scenario_id: str
     scenario_name: str
@@ -61,6 +72,8 @@ class ScenarioMetrics:
     fva: float = 0.0
     da: float = 0.0
     oqs: float = 0.0
+    cds: CDSMetrics = field(default_factory=CDSMetrics)
+    elapsed_seconds: float = 0.0  # scenario execution time
     details: dict = field(default_factory=dict)
 
 
@@ -242,6 +255,51 @@ def calc_oqs(tc, sa, fer, fva, da) -> float:
 
 
 # ============================================================
+# Metric 7: Clinical Decision Support (CDS)
+# ============================================================
+
+QUALITY_CRITERIA_FIELDS = [
+    "greeting_and_contact", "conversation_structure", "needs_identification",
+    "current_complaints_identification", "disease_history", "general_medical_history",
+    "medication_history", "family_history", "prevention_and_risk_control",
+    "treatment_planning", "visit_closure",
+]
+
+DIALOGUE_ANALYTICS_FIELDS = [
+    "doctor_showed_empathy", "doctor_interrupted_patient", "patient_asked_questions",
+    "doctor_used_medical_jargon", "doctor_confirmed_understanding", "lifestyle_discussed",
+    "allergies_discussed", "shared_decision_making", "patient_compliance_assessment",
+    "doctor_pacing",
+]
+
+
+def extract_cds(protocol: dict) -> CDSMetrics:
+    """Extract Clinical Decision Support metrics from protocol."""
+    cds_data = protocol.get("clinical_decision_support", {})
+    if not cds_data:
+        return CDSMetrics()
+
+    qc = cds_data.get("quality_criteria", {})
+    da = cds_data.get("dialogue_analytics", {})
+    eq = cds_data.get("examination_quality", {})
+
+    # Recalculate overall score from criteria (in case examination_quality is missing)
+    scores = [qc.get(f, 0) for f in QUALITY_CRITERIA_FIELDS]
+    total = sum(scores)
+    max_total = 11 * 2  # 22
+    criteria_completed = sum(1 for s in scores if s > 0)
+    overall_score = eq.get("overall_score", round((total / max_total) * 5, 1) if max_total else 0.0)
+
+    return CDSMetrics(
+        overall_score=overall_score,
+        criteria_completed=criteria_completed,
+        criteria_total=11,
+        quality_criteria=qc,
+        dialogue_analytics=da,
+    )
+
+
+# ============================================================
 # Evaluation
 # ============================================================
 
@@ -309,33 +367,57 @@ def evaluate_result(result: dict) -> ScenarioMetrics:
     fva, fva_d = calc_fva(protocol, expected)
     da, da_d = calc_da(protocol, expected)
     oqs = calc_oqs(tc, sa, fer, fva, da)
+    cds = extract_cds(protocol)
+    elapsed = result.get("elapsed_seconds", 0.0)
 
     return ScenarioMetrics(
         scenario_id=scenario_id,
         scenario_name=scenario.get("name", scenario_id),
         tc=round(tc, 1), sa=round(sa, 1),
         fer=round(fer, 1), fva=round(fva, 1),
-        da=da, oqs=round(oqs, 1),
+        da=da, oqs=round(oqs, 1), cds=cds,
+        elapsed_seconds=elapsed,
         details={"TC": tc_d, "SA": sa_d, "FER": fer_d, "FVA": fva_d, "DA": da_d},
     )
 
 
 def print_report(metrics_list: list[ScenarioMetrics]):
-    print(f"\n{'='*95}")
-    print(f"{'Scenario':<40} {'TC':>6} {'SA':>6} {'FER':>6} {'FVA':>6} {'DA':>4} {'OQS':>6}")
-    print(f"{'-'*95}")
+    has_timing = any(m.elapsed_seconds > 0 for m in metrics_list)
+    width = 113 if has_timing else 105
+
+    print(f"\n{'='*width}")
+    header = f"{'Scenario':<40} {'TC':>6} {'SA':>6} {'FER':>6} {'FVA':>6} {'DA':>4} {'OQS':>6} {'CDS':>7}"
+    if has_timing:
+        header += f" {'Time':>6}"
+    print(header)
+    print(f"{'-'*width}")
 
     for m in metrics_list:
         da_str = "YES" if m.da == 1.0 else "NO"
-        print(f"{m.scenario_name[:39]:<40} {m.tc:>5.1f}% {m.sa:>5.1f}% {m.fer:>5.1f}% {m.fva:>5.1f}% {da_str:>4} {m.oqs:>5.1f}%")
+        cds_str = f"{m.cds.overall_score:.1f}/5" if m.cds.overall_score > 0 else "  —"
+        line = f"{m.scenario_name[:39]:<40} {m.tc:>5.1f}% {m.sa:>5.1f}% {m.fer:>5.1f}% {m.fva:>5.1f}% {da_str:>4} {m.oqs:>5.1f}% {cds_str:>7}"
+        if has_timing:
+            time_str = f"{m.elapsed_seconds:.0f}s" if m.elapsed_seconds > 0 else "  —"
+            line += f" {time_str:>6}"
+        print(line)
 
-    print(f"{'-'*95}")
+    print(f"{'-'*width}")
     n = len(metrics_list)
     if n > 0:
         avg = lambda attr: sum(getattr(m, attr) for m in metrics_list) / n
         da_pct = sum(m.da for m in metrics_list) / n
-        print(f"{'AVERAGE':<40} {avg('tc'):>5.1f}% {avg('sa'):>5.1f}% {avg('fer'):>5.1f}% {avg('fva'):>5.1f}% {da_pct:>3.0%} {avg('oqs'):>5.1f}%")
-    print(f"{'='*95}")
+        cds_with_data = [m for m in metrics_list if m.cds.overall_score > 0]
+        cds_avg_str = f"{sum(m.cds.overall_score for m in cds_with_data) / len(cds_with_data):.1f}/5" if cds_with_data else "  —"
+        avg_line = f"{'AVERAGE':<40} {avg('tc'):>5.1f}% {avg('sa'):>5.1f}% {avg('fer'):>5.1f}% {avg('fva'):>5.1f}% {da_pct:>3.0%} {avg('oqs'):>5.1f}% {cds_avg_str:>7}"
+        if has_timing:
+            timed = [m for m in metrics_list if m.elapsed_seconds > 0]
+            if timed:
+                avg_time = sum(m.elapsed_seconds for m in timed) / len(timed)
+                avg_line += f" {avg_time:>5.0f}s"
+            else:
+                avg_line += f" {'  —':>6}"
+        print(avg_line)
+    print(f"{'='*width}")
 
     same = [m for m in metrics_list if m.scenario_id in SAME_GENDER_SCENARIOS]
     diff = [m for m in metrics_list if m.scenario_id not in SAME_GENDER_SCENARIOS]
@@ -345,6 +427,32 @@ def print_report(metrics_list: list[ScenarioMetrics]):
         print(f"\nSpeaker Accuracy by gender:")
         print(f"  Same gender (HARD):      {sa_same:.1f}%")
         print(f"  Different gender (EASY):  {sa_diff:.1f}%")
+
+    # Print CDS details if available
+    cds_scenarios = [m for m in metrics_list if m.cds.overall_score > 0]
+    if cds_scenarios:
+        print(f"\nClinical Decision Support Details:")
+        print(f"  {'Scenario':<35} {'Score':>5} {'Criteria':>10} {'Interrupted':>12}")
+        print(f"  {'-'*65}")
+        for m in cds_scenarios:
+            interrupted = m.cds.dialogue_analytics.get("doctor_interrupted_patient", "—")
+            print(f"  {m.scenario_name[:34]:<35} {m.cds.overall_score:>4.1f}  "
+                  f"{m.cds.criteria_completed:>4}/{m.cds.criteria_total:<4} "
+                  f"{interrupted:>10}")
+        print()
+        # Show quality criteria distribution
+        all_scores = []
+        for m in cds_scenarios:
+            for f in QUALITY_CRITERIA_FIELDS:
+                all_scores.append(m.cds.quality_criteria.get(f, 0))
+        if all_scores:
+            count_0 = all_scores.count(0)
+            count_1 = all_scores.count(1)
+            count_2 = all_scores.count(2)
+            total = len(all_scores)
+            print(f"  Score distribution: 0={count_0} ({count_0/total:.0%})  "
+                  f"1={count_1} ({count_1/total:.0%})  "
+                  f"2={count_2} ({count_2/total:.0%})")
 
     # Print field-level errors
     all_errors = []
@@ -393,7 +501,16 @@ def main():
                 {
                     "id": m.scenario_id, "name": m.scenario_name,
                     "TC": m.tc, "SA": m.sa, "FER": m.fer, "FVA": m.fva,
-                    "DA": m.da, "OQS": m.oqs, "details": m.details,
+                    "DA": m.da, "OQS": m.oqs,
+                    "elapsed_seconds": m.elapsed_seconds,
+                    "CDS": {
+                        "overall_score": m.cds.overall_score,
+                        "criteria_completed": m.cds.criteria_completed,
+                        "criteria_total": m.cds.criteria_total,
+                        "quality_criteria": m.cds.quality_criteria,
+                        "dialogue_analytics": m.cds.dialogue_analytics,
+                    },
+                    "details": m.details,
                 }
                 for m in metrics_list
             ],

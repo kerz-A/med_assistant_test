@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     whisper_model: str = "medium"
     whisper_device: str = "auto"
     whisper_compute_type: str = "float16"
-    whisper_beam_size: int = 5
+    whisper_beam_size: int = 3
 
     # Pyannote
     hf_token: str = ""
@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # LLM extraction batching
     extraction_batch_size: int = 5       # utterances before triggering extraction (was 3)
     extraction_interval_seconds: float = 20.0  # max seconds between extractions (was 15)
+
+    # LLM call pacing
+    llm_min_gap_seconds: float = 0.0  # min gap between LLM calls (0=no delay for GigaChat, 2.0 for Groq)
+    llm_max_concurrent: int = 1  # max concurrent HTTP requests to LLM (1 for GigaChat free tier)
 
     # Speaker ID
     speaker_similarity_threshold: float = 0.1  # min diff between doctor/patient cosine sims

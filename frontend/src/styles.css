@@ -40,6 +40,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border:none;border-radius:var(--radius);font-size:.85rem;font-weight:600;cursor:pointer;transition:all .2s}
 .btn:disabled{opacity:.35;cursor:not-allowed}
 .btn.hidden{display:none}
+.btn.btn-loading{opacity:.7;cursor:wait;pointer-events:none}
+.btn.btn-loading .btn-spinner{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;margin-right:2px}
+.btn .btn-spinner{display:none}
 .btn-calibrate{background:#7c3aed;color:#fff}.btn-calibrate:not(:disabled):hover{background:#6d28d9}
 .btn-stop-cal{background:#475569;color:#fff}
 .btn-record{background:var(--danger);color:#fff}.btn-record:not(:disabled):hover{background:#b91c1c}
@@ -92,5 +95,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .vital-value{font-family:var(--font-mono);font-size:1.15rem;font-weight:700;margin-top:2px}
 .vital-value.empty{color:var(--text-sec);font-size:.82rem}
 .vital-unit{font-size:.62rem;color:var(--text-sec)}
+
+/* CDS — Clinical Decision Support */
+.cds-section{margin-top:14px}
+.cds-layout{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:768px){.cds-layout{grid-template-columns:1fr}}
+.cds-col{}
+.cds-subtitle{font-size:.74rem;font-weight:700;color:var(--text-sec);text-transform:uppercase;letter-spacing:.03em;margin-bottom:8px}
+.cds-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:.82rem}
+.cds-row-label{flex:1;color:var(--text)}
+.cds-badge{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.78rem;flex-shrink:0}
+.cds-score-na{background:var(--bg);color:var(--text-sec)}
+.cds-score-0{background:#fef2f2;color:var(--danger)}
+.cds-score-1{background:#fef3c7;color:var(--warning)}
+.cds-score-2{background:#f0fdf4;color:var(--success)}
+.cds-score-block{text-align:center;padding:16px;background:var(--bg);border-radius:var(--radius);margin-bottom:16px;border:1px solid var(--border)}
+.cds-score-value{font-size:2rem;font-weight:700;color:var(--primary)}
+.cds-score-label{font-size:.72rem;color:var(--text-sec);margin-top:2px}
+.cds-completed{font-size:.78rem;color:var(--text-sec);margin-top:4px}
+.cds-analytics-icon{font-size:.9rem;flex-shrink:0;width:20px;text-align:center}
+.da-yes{color:var(--success)}
+.da-no{color:var(--danger)}
 
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}

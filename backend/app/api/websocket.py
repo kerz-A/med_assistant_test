@@ -8,6 +8,14 @@ import asyncio
 import json
 import logging
 
+ALLOWED_EDITABLE_FIELDS = {
+    "complaints", "complaints_details", "anamnesis", "life_anamnesis",
+    "allergies", "medications", "diagnosis", "treatment_plan",
+    "patient_recommendations",
+    "height_cm", "weight_kg", "pulse", "spo2", "systolic_bp",
+    "full_name", "age", "gender",
+}
+
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -267,7 +275,7 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                             await on_recording_segment(final_seg)
 
                         # Wait for all recording tasks
-                        await session.wait_for_processing_complete(timeout=60.0)
+                        await session.wait_for_processing_complete(timeout=300.0)
 
                         # Flush remaining pending utterances through LLM
                         if session.has_pending_utterances():
@@ -281,7 +289,7 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                                 session.protocol = await pipeline.llm.extract_protocol_data(
                                     session.protocol, pending, context,
                                 )
-                                session.confirm_extraction(len(pending))
+                                await session.confirm_extraction(len(pending))
                             except Exception as e:
                                 logger.warning("[WS] Final extraction failed, %d utterances unprocessed: %s",
                                                len(pending), e)
@@ -316,15 +324,18 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                 # ---- EDIT FIELD (after stop) ----
                 elif msg.type == ClientMessageType.EDIT_FIELD and session:
                     if session.stage in (SessionStage.STOPPED, SessionStage.DONE) and msg.field and msg.value is not None:
-                        proto = session.protocol
-                        if hasattr(proto.exam_data, msg.field):
-                            setattr(proto.exam_data, msg.field, msg.value)
-                        elif hasattr(proto.vitals, msg.field):
-                            setattr(proto.vitals, msg.field, msg.value)
-                        elif hasattr(proto.patient_info, msg.field):
-                            setattr(proto.patient_info, msg.field, msg.value)
-                        await _send_protocol(ws, session)
-                        logger.info("[WS] Field edited: %s", msg.field)
+                        if msg.field not in ALLOWED_EDITABLE_FIELDS:
+                            logger.warning("[WS] Rejected edit of disallowed field: %s", msg.field)
+                        else:
+                            proto = session.protocol
+                            if hasattr(proto.exam_data, msg.field):
+                                setattr(proto.exam_data, msg.field, msg.value)
+                            elif hasattr(proto.vitals, msg.field):
+                                setattr(proto.vitals, msg.field, msg.value)
+                            elif hasattr(proto.patient_info, msg.field):
+                                setattr(proto.patient_info, msg.field, msg.value)
+                            await _send_protocol(ws, session)
+                            logger.info("[WS] Field edited: %s", msg.field)
 
         except WebSocketDisconnect:
             logger.info("[WS] Disconnected: session=%s", session.session_id if session else "none")

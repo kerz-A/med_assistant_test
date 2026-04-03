@@ -1,6 +1,6 @@
 import { AudioCapture } from "./audio-capture";
 import { WebSocketClient } from "./websocket-client";
-import type { Protocol, ExamData, Vitals } from "./websocket-client";
+import type { Protocol, ExamData, Vitals, QualityCriteria, DialogueAnalytics } from "./websocket-client";
 
 type Stage = "idle" | "calibrating" | "calibrated" | "recording" | "processing" | "stopped" | "finalizing" | "done";
 
@@ -25,12 +25,40 @@ const VITAL_FIELDS: { key: keyof Vitals; label: string; unit: string }[] = [
   { key: "systolic_bp", label: "АД", unit: "" },
 ];
 
+const QC_LABELS: { key: keyof QualityCriteria; label: string }[] = [
+  { key: "greeting_and_contact", label: "Приветствие и установление контакта" },
+  { key: "conversation_structure", label: "Структура разговора" },
+  { key: "needs_identification", label: "Выявление потребностей пациента" },
+  { key: "current_complaints_identification", label: "Выявление текущих жалоб" },
+  { key: "disease_history", label: "Анамнез текущего заболевания" },
+  { key: "general_medical_history", label: "Общий медицинский анамнез" },
+  { key: "medication_history", label: "Лекарственный анамнез" },
+  { key: "family_history", label: "Семейный анамнез" },
+  { key: "prevention_and_risk_control", label: "Профилактика и контроль факторов риска" },
+  { key: "treatment_planning", label: "Планирование лечения" },
+  { key: "visit_closure", label: "Заключение визита" },
+];
+
+const DA_LABELS: { key: keyof DialogueAnalytics; label: string }[] = [
+  { key: "doctor_showed_empathy", label: "Врач проявил эмпатию" },
+  { key: "doctor_interrupted_patient", label: "Врач перебивал пациента" },
+  { key: "patient_asked_questions", label: "Пациент задавал вопросы" },
+  { key: "doctor_used_medical_jargon", label: "Использование мед. жаргона" },
+  { key: "doctor_confirmed_understanding", label: "Подтверждение понимания" },
+  { key: "lifestyle_discussed", label: "Обсуждение образа жизни" },
+  { key: "allergies_discussed", label: "Обсуждение аллергий" },
+  { key: "shared_decision_making", label: "Совместное принятие решений" },
+  { key: "patient_compliance_assessment", label: "Оценка комплаентности" },
+  { key: "doctor_pacing", label: "Комфортный темп разговора" },
+];
+
 class App {
   private audio = new AudioCapture();
   private ws = new WebSocketClient();
   private stage: Stage = "idle";
   private timerInterval: ReturnType<typeof setInterval> | null = null;
   private recordStart = 0;
+  private fieldTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Elements
   private btnCalibrate!: HTMLButtonElement;
@@ -69,25 +97,40 @@ class App {
     this.setupButtons();
     this.ws.connect();
     this.setStage("idle");
+    window.addEventListener("beforeunload", () => this.ws.disconnect());
   }
 
   private setStage(s: Stage): void {
     this.stage = s;
-    // Buttons
+
+    // Button visibility: show buttons relevant to current AND transitioning stages
+    this.btnCalibrate.classList.toggle("hidden", s !== "idle");
+    this.btnStopCalibrate.classList.toggle("hidden", s !== "calibrating");
+    this.btnRecord.classList.toggle("hidden", s !== "calibrated");
+    this.btnStop.classList.toggle("hidden", s !== "recording");
+    // Finalize button stays visible during stopped, finalizing, and done
+    this.btnFinalize.classList.toggle("hidden", !["stopped", "finalizing", "done"].includes(s));
+
+    // Button states: loading during transitions, enabled when actionable
+    this.clearAllBtnLoading();
     this.btnCalibrate.disabled = s !== "idle";
     this.btnStopCalibrate.disabled = s !== "calibrating";
     this.btnRecord.disabled = s !== "calibrated";
     this.btnStop.disabled = s !== "recording";
-    this.btnFinalize.disabled = s !== "stopped";
 
-    this.btnCalibrate.classList.toggle("hidden", s !== "idle");
-    this.btnStopCalibrate.classList.toggle("hidden", s !== "calibrating");
-    this.btnRecord.classList.toggle("hidden", !["calibrated"].includes(s));
-    this.btnStop.classList.toggle("hidden", s !== "recording");
-    this.btnFinalize.classList.toggle("hidden", !["stopped", "done"].includes(s));
+    // Finalize: loading during finalizing, disabled when done
+    if (s === "finalizing") {
+      this.setBtnLoading(this.btnFinalize, "Формирование...");
+    } else if (s === "done") {
+      this.btnFinalize.disabled = true;
+      const label = this.btnFinalize.querySelector(".btn-label");
+      if (label) label.textContent = "✅ Заключение готово";
+    } else {
+      this.btnFinalize.disabled = s !== "stopped";
+    }
 
     this.calibrationHint.classList.toggle("visible", s === "calibrating");
-    this.processingEl.classList.toggle("visible", s === "processing" || s === "finalizing");
+    this.processingEl.classList.toggle("visible", s === "processing");
 
     const labels: Record<string, string> = {
       idle: "Готов к работе",
@@ -127,7 +170,7 @@ class App {
       for (const u of msg.utterances) {
         this.addTranscriptLine(u.speaker, u.text, u.start, u.end);
       }
-      if (this.stage === "processing") this.setStage(this.stage === "processing" ? "recording" : this.stage);
+      if (this.stage === "processing") this.setStage("recording");
     };
 
     this.ws.onProtocolUpdate = (msg) => {
@@ -172,6 +215,7 @@ class App {
   }
 
   private stopCalibration(): void {
+    this.setBtnLoading(this.btnStopCalibrate, "Обработка...");
     this.audio.stop();
     this.ws.send({ type: "stop_calibration" });
   }
@@ -191,6 +235,7 @@ class App {
   }
 
   private stopRecording(): void {
+    this.setBtnLoading(this.btnStop, "Остановка...");
     this.audio.stop();
     this.ws.send({ type: "stop_recording" });
     if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; }
@@ -268,6 +313,34 @@ class App {
           `).join("")}
         </div>
       </div>
+      <div class="proto-section cds-section">
+        <div class="proto-title">Система помощи принятия врачебного решения</div>
+        <div class="cds-layout">
+          <div class="cds-col">
+            <div class="cds-subtitle">Критерии качества</div>
+            ${QC_LABELS.map(q => `
+              <div class="cds-row" id="qc-${q.key}">
+                <span class="cds-row-label">${q.label}</span>
+                <span class="cds-badge cds-score-na" id="qc-val-${q.key}">—</span>
+              </div>
+            `).join("")}
+          </div>
+          <div class="cds-col">
+            <div class="cds-score-block" id="cds-score-block">
+              <div class="cds-score-value" id="cds-overall-score">0.0</div>
+              <div class="cds-score-label">общая оценка</div>
+              <div class="cds-completed" id="cds-completed">0 / 11 критериев</div>
+            </div>
+            <div class="cds-subtitle">Аналитика диалога</div>
+            ${DA_LABELS.map(d => `
+              <div class="cds-row" id="da-${d.key}">
+                <span class="cds-row-label">${d.label}</span>
+                <span class="cds-analytics-icon" id="da-val-${d.key}">—</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      </div>
     `;
 
     // Edit handler — send changes to server
@@ -287,9 +360,9 @@ class App {
     const nameEl = document.getElementById("field-full_name") as HTMLTextAreaElement | null;
     const ageEl = document.getElementById("field-age") as HTMLTextAreaElement | null;
     const genderEl = document.getElementById("field-gender") as HTMLTextAreaElement | null;
-    if (nameEl && pi.full_name) { nameEl.value = pi.full_name; nameEl.classList.add("updated"); setTimeout(() => nameEl.classList.remove("updated"), 1500); }
-    if (ageEl && pi.age != null) { ageEl.value = String(pi.age); ageEl.classList.add("updated"); setTimeout(() => ageEl.classList.remove("updated"), 1500); }
-    if (genderEl && pi.gender) { genderEl.value = pi.gender; genderEl.classList.add("updated"); setTimeout(() => genderEl.classList.remove("updated"), 1500); }
+    if (nameEl && pi.full_name) { nameEl.value = pi.full_name; this.flashUpdate("full_name", nameEl); }
+    if (ageEl && pi.age != null) { ageEl.value = String(pi.age); this.flashUpdate("age", ageEl); }
+    if (genderEl && pi.gender) { genderEl.value = pi.gender; this.flashUpdate("gender", genderEl); }
 
     // Also update header
     if (pi.full_name || pi.age) {
@@ -306,8 +379,7 @@ class App {
       if (val && typeof val === "string" && val.trim()) {
         if (el.value !== val) {
           el.value = val;
-          el.classList.add("updated");
-          setTimeout(() => el.classList.remove("updated"), 1500);
+          this.flashUpdate(`field-${f.key}`, el);
         }
       }
     }
@@ -322,8 +394,47 @@ class App {
         if (valEl.textContent !== txt) {
           valEl.textContent = txt;
           valEl.classList.remove("empty");
-          card.classList.add("updated");
-          setTimeout(() => card.classList.remove("updated"), 1500);
+          this.flashUpdate(`vital-${v.key}`, card);
+        }
+      }
+    }
+
+    // Clinical Decision Support
+    const cds = proto.clinical_decision_support;
+    if (cds) {
+      const qc = cds.quality_criteria ?? {};
+      for (const q of QC_LABELS) {
+        const badge = document.getElementById(`qc-val-${q.key}`);
+        if (!badge) continue;
+        const val = qc[q.key];
+        if (val != null) {
+          badge.textContent = String(val);
+          badge.className = `cds-badge cds-score-${val}`;
+        }
+      }
+
+      const eq = cds.examination_quality;
+      if (eq) {
+        const scoreEl = document.getElementById("cds-overall-score");
+        const completedEl = document.getElementById("cds-completed");
+        if (scoreEl) scoreEl.textContent = (eq.overall_score ?? 0).toFixed(1);
+        if (completedEl) completedEl.textContent = `${eq.criteria_completed ?? 0} / ${eq.criteria_total ?? 11} критериев`;
+      }
+
+      const da = cds.dialogue_analytics ?? {};
+      for (const d of DA_LABELS) {
+        const icon = document.getElementById(`da-val-${d.key}`);
+        if (!icon) continue;
+        const val = da[d.key];
+        if (val != null) {
+          if (d.key === "doctor_interrupted_patient") {
+            // 0-2 scale badge: 2=не перебивал (green), 1=частично (yellow), 0=перебивал (red)
+            icon.textContent = String(val);
+            icon.className = `cds-badge cds-score-${val}`;
+          } else {
+            icon.textContent = val ? "\u2714" : "\u2718";
+            icon.className = `cds-analytics-icon ${val ? "da-yes" : "da-no"}`;
+          }
         }
       }
     }
@@ -333,6 +444,34 @@ class App {
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${m.toString().padStart(2,"0")}:${s.toString().padStart(2,"0")}`;
+  }
+
+  private flashUpdate(key: string, el: Element, cls: string = "updated"): void {
+    const prev = this.fieldTimeouts.get(key);
+    if (prev) clearTimeout(prev);
+    el.classList.add(cls);
+    this.fieldTimeouts.set(key, setTimeout(() => { el.classList.remove(cls); this.fieldTimeouts.delete(key); }, 1500));
+  }
+
+  private setBtnLoading(btn: HTMLButtonElement, text: string): void {
+    btn.classList.add("btn-loading");
+    btn.disabled = true;
+    const label = btn.querySelector(".btn-label");
+    if (label) {
+      btn.dataset.origLabel = label.textContent || "";
+      label.textContent = text;
+    }
+  }
+
+  private clearAllBtnLoading(): void {
+    for (const btn of [this.btnCalibrate, this.btnStopCalibrate, this.btnRecord, this.btnStop, this.btnFinalize]) {
+      btn.classList.remove("btn-loading");
+      const label = btn.querySelector(".btn-label");
+      if (label && btn.dataset.origLabel) {
+        label.textContent = btn.dataset.origLabel;
+        delete btn.dataset.origLabel;
+      }
+    }
   }
 
   private esc(t: string): string {

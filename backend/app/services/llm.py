@@ -22,12 +22,33 @@ logger = logging.getLogger(__name__)
 MEDICAL_CORRECTION_PROMPT = """\
 Исправь ошибки распознавания речи (ASR) в медицинских терминах и названиях лекарств.
 
-Примеры: нурофон→нурофен, парацетомол→парацетамол, ибопрофен→ибупрофен, \
+═══ ПРАВИЛА КОРРЕКЦИИ ═══
+1. Исправляй фонетически похожие слова на корректные медицинские термины
+2. Учитывай КОНТЕКСТ (симптомы, жалобы, диагноз) для выбора наиболее подходящего термина
+3. Если слово созвучно с названием препарата И контекст подтверждает — исправляй на препарат
+4. НЕ меняй смысл. НЕ перефразируй. Числа оставь как есть.
+
+═══ ПРИМЕРЫ КОРРЕКЦИИ ═══
+Простые ASR-ошибки:
+нурофон→нурофен, парацетомол→парацетамол, ибопрофен→ибупрофен, \
 гастрид→гастрит, гипертания→гипертония, диобед→диабет, тохикардия→тахикардия, \
 амоксицилин→амоксициллин, холицистит→холецистит, панкратит→панкреатит, \
-кординол→кардиология, мезентерий→мезентерий, апатия→апатия.
+кординол→кардиология, мезентерий→мезентерий.
 
-НЕ меняй смысл. НЕ перефразируй. Числа оставь как есть.
+Контекстно-зависимые (распознавание далеко от оригинала):
+"те резин" при дерматите/аллергии → "цетиризин"
+"на прокс" при боли → "напроксен"
+"а мок лав" при инфекции → "амоксиклав"
+"лоза ртан" при гипертонии → "лозартан"
+"мета формин" при диабете → "метформин"
+"о мепра зол" при гастрите → "омепразол"
+"карба мазе пин" при эпилепсии/невралгии → "карбамазепин"
+"тора семид" при отёках → "торасемид"
+
+═══ ПРИНЦИП ═══
+Если слово не является известным словом русского языка, но СОЗВУЧНО с медицинским \
+термином или препаратом — исправь его. Используй жалобы и симптомы из контекста \
+для определения наиболее вероятного препарата/термина.
 
 Вход: {"items": ["текст 1", "текст 2"]}
 Выход: {"items": ["исправленный 1", "исправленный 2"]}
@@ -62,7 +83,10 @@ EXTRACTION_PROMPT = """\
 1. Извлекай ТОЛЬКО из реплик ПАЦИЕНТА (реплики врача — контекст)
 2. НЕ выдумывай данных
 3. Сохраняй ранее заполненные поля — НЕ удаляй и НЕ обнуляй
-4. Исправляй ASR: нурофон→нурофен, гастрид→гастрит, диобед→диабет
+4. Исправляй ASR-ошибки: нурофон→нурофен, гастрид→гастрит, диобед→диабет
+5. Если слово не распознаётся, но созвучно с препаратом/термином — подбирай \
+наиболее подходящий вариант по контексту жалоб и симптомов \
+(пример: "те резин" при кожных симптомах → "цетиризин")
 
 ═══ ЧИСЛА ═══
 Пациент говорит словами — преобразуй в цифры:
@@ -84,9 +108,20 @@ EXTRACTION_PROMPT = """\
 
 ЗАПРЕЩЕНО: болезни родственников в complaints / anamnesis!
 
-═══ ОТРИЦАНИЯ ═══
-- "не аллергик" → allergies: "Отрицает"
-- "лекарств не принимаю" → medications: "Не принимает"
+═══ КРИТИЧЕСКИ ВАЖНО: НЕ ТЕРЯЙ ИНФОРМАЦИЮ ═══
+1. АЛЛЕРГИИ: Если пациент ЛЮБЫМ образом упоминает аллергию (даже вскользь, даже позже \
+в разговоре) — это ОБЯЗАТЕЛЬНО должно попасть в поле allergies. \
+НЕЛЬЗЯ писать "Отрицает" если пациент хоть раз упомянул аллергию! \
+Пример ОШИБКИ: пациент говорит "у меня аллергия на цитрусовые" → allergies: "Отрицает" — ЭТО НЕДОПУСТИМО. \
+Правильно: allergies: "Цитрусовые"
+2. ПРЕПАРАТЫ: ВСЕ упомянутые пациентом препараты, витамины, БАДы, травы — записывай в medications. \
+"Пью витамины группы Б" → medications: "Витамины группы B". \
+"Принимаю омегу" → medications: "Омега-3". \
+НЕ ИГНОРИРУЙ витамины, БАДы, гомеопатию — это тоже medications!
+3. ОТРИЦАНИЯ: Используй "Отрицает" / "Не принимает" ТОЛЬКО если пациент ЯВНО и ОДНОЗНАЧНО \
+сказал что аллергии нет / лекарств не принимает, И при этом НИГДЕ в разговоре не упоминал обратное.
+4. ПРОТИВОРЕЧИЯ: Если пациент сначала отрицает, а потом упоминает аллергию/препарат — \
+верь ПОЗДНЕМУ высказыванию. Факт важнее отрицания.
 
 Ответь СТРОГО JSON:
 {{
@@ -102,6 +137,94 @@ EXTRACTION_PROMPT = """\
     "height_cm": число|null, "weight_kg": число|null,
     "pulse": число|null, "spo2": число|null,
     "systolic_bp": "строка NNN/NN|null"
+  }}
+}}"""
+
+PATIENT_SUMMARY_PROMPT = """\
+Ты — медицинский ассистент. Суммаризируй слова пациента из приёма у врача.
+
+ОБЯЗАТЕЛЬНО СОХРАНИ:
+- Точные формулировки жалоб (локализация, характер, иррадиация, шкала боли)
+- Хронологию симптомов (когда началось, как менялось)
+- Названия лекарств и дозировки
+- Аллергии и их проявления
+- Семейную историю болезней
+- Показатели, которые пациент называл (рост, вес, давление, пульс, сатурация)
+
+Ответь на русском, 15-20 предложений. Пиши от третьего лица ("Пациент жалуется на...")."""
+
+QUALITY_ANALYSIS_PROMPT = """\
+Ты — строгий независимый эксперт по оценке качества врачебных приёмов. \
+Проанализируй транскрипт диалога врача с пациентом.
+
+═══ КРИТЕРИИ КАЧЕСТВА (0-2 балла каждый) ═══
+
+ВАЖНО: Используй ВСЕ ТРИ оценки (0, 1, 2) в зависимости от реального качества осмотра!
+- 0 = тема НЕ затронута вообще, врач полностью пропустил этот аспект
+- 1 = тема затронута ПОВЕРХНОСТНО или ЧАСТИЧНО (врач спросил, но не углубился; \
+упомянул, но не раскрыл; начал, но не завершил)
+- 2 = тема раскрыта ПОЛНОСТЬЮ и ПОДРОБНО (врач задал уточняющие вопросы, получил \
+развёрнутые ответы, систематически собрал информацию)
+
+НЕ ЗАВЫШАЙ оценки! Оценка "2" — это ОТЛИЧНАЯ работа, а не просто "упомянул тему". \
+Если врач задал один вопрос без уточнений — это "1", а не "2". \
+Оценка "1" — самая частая для среднего приёма.
+
+Критерии:
+- greeting_and_contact: Приветствие, представление по имени, установление контакта
+  0=не поздоровался / не представился; 1=поздоровался но без представления или формально; 2=полноценное приветствие, представление, установление контакта
+- conversation_structure: Логичная структура беседы
+  0=хаотичный разговор без структуры; 1=есть базовая структура но с перескоками между темами; 2=чёткая последовательная структура (жалобы→анамнез→осмотр→план)
+- needs_identification: Выявление потребностей/ожиданий пациента
+  0=не спрашивал чего ожидает пациент; 1=формально спросил причину визита; 2=выяснил ожидания, опасения, цели визита
+- current_complaints_identification: Выявление текущих жалоб
+  0=не расспросил о жалобах; 1=узнал основную жалобу без деталей (локализация, характер, интенсивность); 2=подробно расспросил: локализация, характер, интенсивность (ВАШ), иррадиация, провоцирующие факторы
+- disease_history: Анамнез текущего заболевания
+  0=не спрашивал когда и как началось; 1=узнал когда началось, но без деталей динамики; 2=подробно: начало, динамика, что уже предпринимал, эффект от лечения
+- general_medical_history: Хронические болезни, операции, госпитализации
+  0=не спросил о хронических заболеваниях; 1=спросил "чем болеете?" без уточнений; 2=систематически расспросил о хронических болезнях, операциях, госпитализациях
+- medication_history: Текущие лекарства, дозировки, регулярность приёма
+  0=не спросил о лекарствах; 1=спросил "что принимаете?" без уточнения доз и схемы; 2=узнал конкретные препараты, дозы, кратность, длительность приёма
+- family_history: Семейный/наследственный анамнез
+  0=не спросил о болезнях в семье; 1=задал общий вопрос о наследственности; 2=расспросил о конкретных заболеваниях у родителей, братьев/сестёр
+- prevention_and_risk_control: Образ жизни, курение, алкоголь, физ. активность
+  0=не обсуждал образ жизни; 1=спросил об 1-2 факторах; 2=системно обсудил: курение, алкоголь, питание, сон, физ. активность, стресс
+- treatment_planning: План лечения/обследований
+  0=не озвучил плана; 1=назначил лечение без обоснования или неполный план; 2=подробный план: обследования с обоснованием, лекарства с дозами, консультации
+- visit_closure: Подведение итогов, рекомендации, контрольный визит
+  0=приём закончился без подведения итогов; 1=кратко резюмировал или назначил повторный визит; 2=подвёл итоги, дал рекомендации, обсудил red flags, назначил контрольный визит
+
+═══ АНАЛИТИКА ДИАЛОГА ═══
+
+Все метрики 0 или 1, КРОМЕ doctor_interrupted_patient (0-2):
+
+- doctor_showed_empathy: Врач проявил эмпатию/сочувствие к пациенту (0/1)
+- doctor_interrupted_patient: Врач перебивал пациента (ШКАЛА 0-2):
+  2 = врач НЕ перебивал, давал пациенту договорить, выдерживал паузы
+  1 = врач иногда перебивал, но в целом давал говорить
+  0 = врач систематически перебивал пациента, не давал закончить мысль
+- patient_asked_questions: Пациент задавал вопросы (0/1)
+- doctor_used_medical_jargon: Врач использовал медицинский жаргон без пояснений (0/1)
+- doctor_confirmed_understanding: Врач уточнял, правильно ли понял пациента (0/1)
+- lifestyle_discussed: Обсуждался образ жизни (питание, сон, стресс, физ. активность) (0/1)
+- allergies_discussed: Обсуждались аллергии (0/1)
+- shared_decision_making: Совместное принятие решений о лечении (0/1)
+- patient_compliance_assessment: Оценка приверженности пациента лечению (0/1)
+- doctor_pacing: Врач соблюдал комфортный темп разговора (0/1)
+
+Ответь СТРОГО JSON:
+{{
+  "quality_criteria": {{
+    "greeting_and_contact": 0, "conversation_structure": 0, "needs_identification": 0,
+    "current_complaints_identification": 0, "disease_history": 0, "general_medical_history": 0,
+    "medication_history": 0, "family_history": 0, "prevention_and_risk_control": 0,
+    "treatment_planning": 0, "visit_closure": 0
+  }},
+  "dialogue_analytics": {{
+    "doctor_showed_empathy": 0, "doctor_interrupted_patient": 0, "patient_asked_questions": 0,
+    "doctor_used_medical_jargon": 0, "doctor_confirmed_understanding": 0, "lifestyle_discussed": 0,
+    "allergies_discussed": 0, "shared_decision_making": 0, "patient_compliance_assessment": 0,
+    "doctor_pacing": 0
   }}
 }}"""
 
@@ -160,6 +283,7 @@ class LLMService:
         self._is_ollama: bool = False
         self._is_gigachat: bool = False
         self._call_lock: asyncio.Lock = asyncio.Lock()
+        self._http_sem: asyncio.Semaphore = asyncio.Semaphore(settings.llm_max_concurrent)
         self._last_call_time: float = 0.0
         self._rate_limited_until: float = 0.0
         self._gigachat_token: str | None = None
@@ -240,6 +364,8 @@ class LLMService:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                if "access_token" not in data:
+                    raise RuntimeError(f"GigaChat OAuth: missing access_token in response: {str(data)[:200]}")
                 self._gigachat_token = data["access_token"]
                 # Token TTL ~30 min; refresh at 90% to avoid expiry mid-request
                 expires_at_ms = data.get("expires_at", 0)
@@ -278,7 +404,11 @@ class LLMService:
                         usage.get("prompt_tokens", "?"),
                         usage.get("completion_tokens", "?"),
                         usage.get("total_tokens", "?"))
-        return data["choices"][0]["message"]["content"].strip()
+        try:
+            return data["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError) as e:
+            logger.error("[LLM-FALLBACK] Unexpected response structure: %s", str(data)[:300])
+            raise RuntimeError(f"LLM fallback response missing expected fields: {e}")
 
     # ---- Core chat with retry ----
 
@@ -302,6 +432,7 @@ class LLMService:
         max_retries = 5
         retry_start = time.monotonic()
         resp = None
+        retried_auth = False
 
         for attempt in range(max_retries):
             # Hard cap: don't retry longer than 30s total
@@ -309,7 +440,8 @@ class LLMService:
                 logger.warning("[LLM] Retry time limit exceeded (30s), giving up")
                 break
 
-            # Lock for HTTP request + rate limit cooldown (prevents concurrent 429 races)
+            # SHORT lock: rate-limit check, token refresh, gap enforcement
+            should_break = False
             async with self._call_lock:
                 # Wait for rate limit cooldown if another call got 429
                 now = time.monotonic()
@@ -317,35 +449,44 @@ class LLMService:
                     cooldown = self._rate_limited_until - now
                     if (now - retry_start) + cooldown > 30.0:
                         logger.warning("[LLM] Cooldown %.1fs would exceed 30s budget", cooldown)
-                        break
-                    logger.info("[LLM] Waiting %.1fs for rate-limit cooldown", cooldown)
-                    await asyncio.sleep(cooldown)
+                        should_break = True
+                    else:
+                        logger.info("[LLM] Waiting %.1fs for rate-limit cooldown", cooldown)
+                        await asyncio.sleep(cooldown)
 
-                # GigaChat: refresh OAuth token if expired
-                if self._is_gigachat and time.monotonic() >= self._gigachat_token_expires:
-                    await self._refresh_gigachat_token()
-                    self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
+                if not should_break:
+                    # GigaChat: refresh OAuth token if expired
+                    if self._is_gigachat and time.monotonic() >= self._gigachat_token_expires:
+                        await self._refresh_gigachat_token()
+                        self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
 
-                # Min 2s gap between calls
-                elapsed = time.monotonic() - self._last_call_time
-                if elapsed < 2.0:
-                    await asyncio.sleep(2.0 - elapsed)
+                    # Configurable gap between calls (0 for GigaChat, 2.0 for Groq)
+                    if settings.llm_min_gap_seconds > 0:
+                        elapsed = time.monotonic() - self._last_call_time
+                        if elapsed < settings.llm_min_gap_seconds:
+                            await asyncio.sleep(settings.llm_min_gap_seconds - elapsed)
 
-                t0 = time.monotonic()
+                    self._last_call_time = time.monotonic()
+
+            if should_break:
+                break
+
+            # HTTP request with concurrency limit (no gap, just max parallel requests)
+            t0 = time.monotonic()
+            async with self._http_sem:
                 try:
                     resp = await self._client.post("/chat/completions", json=payload)
                 except httpx.TimeoutException:
-                    self._last_call_time = time.monotonic()
                     logger.warning("[LLM] Timeout attempt %d/%d", attempt + 1, max_retries)
                     if attempt < max_retries - 1:
                         continue
                     raise
 
-                self._last_call_time = time.monotonic()
-                ms = int((time.monotonic() - t0) * 1000)
+            ms = int((time.monotonic() - t0) * 1000)
 
-                # Rate limit: set cooldown INSIDE lock so other callers see it
-                if resp.status_code in (403, 429):
+            # Rate limit: SHORT lock to update shared cooldown state
+            if resp.status_code in (403, 429):
+                async with self._call_lock:
                     retry_after = resp.headers.get("retry-after")
                     if retry_after:
                         try:
@@ -358,9 +499,18 @@ class LLMService:
                     self._rate_limited_until = time.monotonic() + wait
                     logger.warning("[LLM] Rate limited (%d), cooldown %.1fs (attempt %d/%d)",
                                    resp.status_code, wait, attempt + 1, max_retries)
-                    continue  # Next iteration sleeps inside lock via cooldown check
+                continue
 
-            # Success (outside lock)
+            # GigaChat 401: token expired mid-session — refresh and retry once
+            if resp.status_code == 401 and self._is_gigachat and not retried_auth:
+                async with self._call_lock:
+                    logger.info("[LLM] GigaChat 401, refreshing token...")
+                    await self._refresh_gigachat_token()
+                    self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
+                retried_auth = True
+                continue
+
+            # Success
             logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
             resp.raise_for_status()
             data = resp.json()
@@ -370,12 +520,16 @@ class LLMService:
                             usage.get("prompt_tokens", "?"),
                             usage.get("completion_tokens", "?"),
                             usage.get("total_tokens", "?"))
-            return data["choices"][0]["message"]["content"].strip()
+            try:
+                return data["choices"][0]["message"]["content"].strip()
+            except (KeyError, IndexError, TypeError) as e:
+                logger.error("[LLM] Unexpected response structure: %s", str(data)[:300])
+                raise RuntimeError(f"LLM response missing expected fields: {e}")
 
         # All retries exhausted
         if resp is not None:
-            resp.raise_for_status()
-        raise RuntimeError("LLM retries exhausted")
+            logger.error("[LLM] Final response: %d %s", resp.status_code, resp.text[:200])
+        raise RuntimeError(f"LLM retries exhausted (last status: {resp.status_code if resp else 'timeout'})")
 
     # ---- Medical correction (JSON-based, not separator-based) ----
 
@@ -449,6 +603,25 @@ class LLMService:
                 except Exception as e2:
                     logger.error("[LLM-FALLBACK] Also failed: %s", e2)
             raise
+
+    # ---- Patient speech summarization (for long sessions) ----
+
+    async def summarize_patient_speech(self, patient_text: str) -> str:
+        """Summarize all patient utterances into a compact medical narrative."""
+        logger.info("[LLM] Summarizing patient speech (%d chars)...", len(patient_text))
+        return await self._chat(PATIENT_SUMMARY_PROMPT, patient_text, json_mode=False)
+
+    # ---- Quality analysis ----
+
+    async def analyze_quality(self, transcript: str) -> dict:
+        """Analyze transcript for consultation quality criteria and dialogue analytics."""
+        logger.info("[LLM] Analyzing consultation quality...")
+        try:
+            raw = await self._chat(QUALITY_ANALYSIS_PROMPT, transcript, temperature=0.1)
+            return self._parse_json(raw) or {}
+        except Exception as e:
+            logger.error("[LLM] Quality analysis failed: %s", e)
+            return {}
 
     # ---- Finalization ----
 
@@ -531,11 +704,25 @@ class LLMService:
                         continue  # Don't overwrite existing data with empty
 
                     # For medications/allergies: append if new info, don't replace
-                    if current_val and field in ("medications", "allergies"):
-                        existing_norm = current_val.lower().replace("—", "-").replace("–", "-")
-                        new_norm = new_val.lower().replace("—", "-").replace("–", "-")
-                        if new_norm not in existing_norm:
-                            setattr(updated.exam_data, field, f"{current_val}; {new_val}")
+                    if field in ("medications", "allergies"):
+                        new_norm = new_val.lower().replace("—", "-").replace("–", "-").strip()
+                        negation_phrases = ("отрицает", "не принимает", "нет", "отсутствуют")
+                        new_is_negation = any(neg in new_norm for neg in negation_phrases)
+
+                        if current_val:
+                            current_norm = current_val.lower().replace("—", "-").replace("–", "-").strip()
+                            current_is_negation = any(neg in current_norm for neg in negation_phrases)
+
+                            if new_is_negation and not current_is_negation:
+                                # Don't overwrite real data with negation
+                                continue
+                            elif not new_is_negation and current_is_negation:
+                                # Replace negation with real data (patient corrected themselves)
+                                setattr(updated.exam_data, field, new_val)
+                            elif new_norm not in current_norm:
+                                setattr(updated.exam_data, field, f"{current_val}; {new_val}")
+                        else:
+                            setattr(updated.exam_data, field, new_val)
                     else:
                         setattr(updated.exam_data, field, new_val)
 
