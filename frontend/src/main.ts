@@ -411,8 +411,14 @@ class App {
         if (!icon) continue;
         const val = da[d.key];
         if (val != null) {
-          icon.textContent = val ? "\u2714" : "\u2718";
-          icon.className = `cds-analytics-icon ${val ? "da-yes" : "da-no"}`;
+          if (d.key === "doctor_interrupted_patient") {
+            // 0-2 scale badge: 2=не перебивал (green), 1=частично (yellow), 0=перебивал (red)
+            icon.textContent = String(val);
+            icon.className = `cds-badge cds-score-${val}`;
+          } else {
+            icon.textContent = val ? "\u2714" : "\u2718";
+            icon.className = `cds-analytics-icon ${val ? "da-yes" : "da-no"}`;
+          }
         }
       }
     }
