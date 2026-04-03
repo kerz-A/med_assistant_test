@@ -209,8 +209,11 @@ class App {
       this.ws.send({ type: "start_calibration", config: { num_speakers: 2 } });
       this.setStage("calibrating");
       this.transcript.innerHTML = "";
-    } catch {
-      alert("Не удалось получить доступ к микрофону.");
+    } catch (e) {
+      const msg = e instanceof DOMException && e.name === "NotAllowedError"
+        ? "Не удалось получить доступ к микрофону. Разрешите доступ в настройках браузера."
+        : "Ошибка инициализации аудио. Попробуйте обновить страницу.";
+      alert(msg);
     }
   }
 
@@ -229,8 +232,11 @@ class App {
       this.recordStart = Date.now();
       this.timerInterval = setInterval(() => this.updateTimer(), 1000);
       this.updateTimer();
-    } catch {
-      alert("Не удалось получить доступ к микрофону.");
+    } catch (e) {
+      const msg = e instanceof DOMException && e.name === "NotAllowedError"
+        ? "Не удалось получить доступ к микрофону. Разрешите доступ в настройках браузера."
+        : "Ошибка инициализации аудио. Попробуйте обновить страницу.";
+      alert(msg);
     }
   }
 

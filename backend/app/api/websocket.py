@@ -142,6 +142,9 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                     except Exception:
                         logger.exception("[WS] ASR fallback also failed for segment %.1f-%.1fs",
                                          segment.start_time, segment.end_time)
+                        await _safe_send(ws, StatusMessage(
+                            status="recording", message="Сегмент не распознан",
+                        ).model_dump_json())
                     await _safe_send(ws, StatusMessage(status="recording").model_dump_json())
 
         try:

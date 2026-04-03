@@ -132,11 +132,17 @@ export class WebSocketClient {
 
     this.ws.onopen = () => { this.reconnectDelay = 1000; this.onConnectionChange?.(true); };
     this.ws.onclose = () => { this.onConnectionChange?.(false); this.scheduleReconnect(); };
-    this.ws.onerror = () => this.ws?.close();
+    this.ws.onerror = () => { console.warn("[WS] Connection error"); this.ws?.close(); };
 
     this.ws.onmessage = (event: MessageEvent) => {
       if (typeof event.data !== "string") return;
-      const msg = JSON.parse(event.data) as ServerMessage;
+      let msg: ServerMessage;
+      try {
+        msg = JSON.parse(event.data) as ServerMessage;
+      } catch {
+        console.warn("[WS] Invalid JSON:", event.data.slice(0, 100));
+        return;
+      }
       switch (msg.type) {
         case "calibration_complete": this.onCalibrationComplete?.(msg); break;
         case "transcript_update": this.onTranscriptUpdate?.(msg); break;
