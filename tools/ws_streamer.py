@@ -1,4 +1,4 @@
-"""Stream WAV files through WebSocket to Aiston TT backend.
+"""Stream WAV files through WebSocket to MedScribe backend.
 
 Simulates the full 4-stage flow:
   1. Calibration: stream calibration WAV → stop calibration
@@ -123,7 +123,7 @@ async def wait_for_messages(ws, timeout: float = 30.0, stop_on: str | None = Non
 async def run(args):
     url = args.url
     print(f"\n{'='*60}")
-    print(f"Aiston TT v4 — WebSocket Test Streamer (VAD + Speaker Embeddings)")
+    print(f"MedScribe v4 — WebSocket Test Streamer (VAD + Speaker Embeddings)")
     print(f"Server: {url}")
     print(f"{'='*60}")
 
@@ -227,7 +227,7 @@ async def run(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Stream WAV to Aiston TT backend")
+    parser = argparse.ArgumentParser(description="Stream WAV to MedScribe backend")
     parser.add_argument("calibration_wav", help="WAV file for calibration phase")
     parser.add_argument("exam_wav", nargs="?", help="WAV file for exam phase (uses calibration_wav if not specified)")
     parser.add_argument("--url", default="ws://localhost:8000/ws/session", help="WebSocket URL")

@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
     await llm_service.close()
 
 
-app = FastAPI(title="Aiston TT v4", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="MedScribe", version="4.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 pipeline = ProcessingPipeline(transcription_service, speaker_id_service, llm_service)

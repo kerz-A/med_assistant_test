@@ -109,7 +109,7 @@ async def build_dialogue(dialogue: list, pause_ms: int = 800) -> bytes:
 
 async def main():
     print("=" * 60)
-    print("Generating test audio for Aiston TT v3")
+    print("Generating test audio for MedScribe")
     print(f"ffmpeg: {FFMPEG}")
     print("=" * 60)
 

@@ -224,7 +224,7 @@ async def main():
     os.makedirs(args.results_dir, exist_ok=True)
 
     print(f"\n{'='*70}")
-    print(f"Aiston TT — Automated Test Suite")
+    print(f"MedScribe — Automated Test Suite")
     print(f"Server: {args.url}")
     print(f"Scenarios: {len(scenarios)}")
     print(f"Audio dir: {args.audio_dir}")

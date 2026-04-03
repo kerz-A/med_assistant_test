@@ -138,7 +138,7 @@ async def main():
         return
 
     print(f"{'='*60}")
-    print(f"Aiston TT — Test Scenario Audio Generator")
+    print(f"MedScribe — Test Scenario Audio Generator")
     print(f"ffmpeg: {FFMPEG}")
     print(f"{'='*60}")
 
