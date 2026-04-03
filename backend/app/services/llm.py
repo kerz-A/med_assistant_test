@@ -283,6 +283,7 @@ class LLMService:
         self._is_ollama: bool = False
         self._is_gigachat: bool = False
         self._call_lock: asyncio.Lock = asyncio.Lock()
+        self._http_sem: asyncio.Semaphore = asyncio.Semaphore(settings.llm_max_concurrent)
         self._last_call_time: float = 0.0
         self._rate_limited_until: float = 0.0
         self._gigachat_token: str | None = None
@@ -464,15 +465,16 @@ class LLMService:
             if should_break:
                 break
 
-            # HTTP request OUTSIDE lock — allows concurrent LLM calls
+            # HTTP request with concurrency limit (no gap, just max parallel requests)
             t0 = time.monotonic()
-            try:
-                resp = await self._client.post("/chat/completions", json=payload)
-            except httpx.TimeoutException:
-                logger.warning("[LLM] Timeout attempt %d/%d", attempt + 1, max_retries)
-                if attempt < max_retries - 1:
-                    continue
-                raise
+            async with self._http_sem:
+                try:
+                    resp = await self._client.post("/chat/completions", json=payload)
+                except httpx.TimeoutException:
+                    logger.warning("[LLM] Timeout attempt %d/%d", attempt + 1, max_retries)
+                    if attempt < max_retries - 1:
+                        continue
+                    raise
 
             ms = int((time.monotonic() - t0) * 1000)
 
