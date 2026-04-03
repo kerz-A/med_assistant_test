@@ -48,6 +48,7 @@ class SessionState:
 
         # LLM extraction batch buffer
         self._pending_utterances: list[Utterance] = []
+        self._pending_lock: asyncio.Lock = asyncio.Lock()
         self._last_extraction_time: float = 0.0
 
         logger.info("[SESSION] Created: id=%s speakers=%d", self.session_id, num_speakers)
@@ -69,8 +70,9 @@ class SessionState:
 
     # ---- LLM extraction batching ----
 
-    def add_pending_utterance(self, utterance: Utterance) -> None:
-        self._pending_utterances.append(utterance)
+    async def add_pending_utterance(self, utterance: Utterance) -> None:
+        async with self._pending_lock:
+            self._pending_utterances.append(utterance)
 
     def should_extract_protocol(self) -> bool:
         """Check if we should run LLM extraction (batch threshold reached)."""
@@ -86,16 +88,18 @@ class SessionState:
         """Return copy of pending utterances WITHOUT clearing (for safe extraction)."""
         return list(self._pending_utterances)
 
-    def confirm_extraction(self, count: int) -> None:
+    async def confirm_extraction(self, count: int) -> None:
         """Clear first N pending utterances after successful extraction."""
-        self._pending_utterances = self._pending_utterances[count:]
-        self._last_extraction_time = time.monotonic()
+        async with self._pending_lock:
+            self._pending_utterances = self._pending_utterances[count:]
+            self._last_extraction_time = time.monotonic()
 
-    def get_pending_utterances(self) -> list[Utterance]:
+    async def get_pending_utterances(self) -> list[Utterance]:
         """Return and clear pending utterances for extraction."""
-        pending = self._pending_utterances
-        self._pending_utterances = []
-        self._last_extraction_time = time.monotonic()
+        async with self._pending_lock:
+            pending = self._pending_utterances
+            self._pending_utterances = []
+            self._last_extraction_time = time.monotonic()
         return pending
 
     def has_pending_utterances(self) -> bool:
