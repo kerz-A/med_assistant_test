@@ -212,13 +212,26 @@ class ProcessingPipeline:
         )
 
     async def finalize(self, session: SessionState) -> int:
-        """Run full finalization: generate diagnosis + treatment + recommendations."""
+        """Run full finalization: generate diagnosis + treatment + recommendations.
+
+        For long sessions (>50 utterances): summarize patient speech first,
+        then finalize with compact summary instead of full transcript.
+        """
         t0 = time.monotonic()
         logger.info("[PIPELINE] Finalizing session=%s | transcript=%d utterances",
                      session.session_id, len(session.transcript))
 
+        if len(session.transcript) > 50:
+            patient_text = session.format_patient_utterances()
+            summary = await self.llm.summarize_patient_speech(patient_text)
+            transcript = f"[РЕЗЮМЕ СЛОВ ПАЦИЕНТА]\n{summary}"
+            logger.info("[PIPELINE] Using summarized transcript (%d chars) instead of full (%d utterances)",
+                        len(transcript), len(session.transcript))
+        else:
+            transcript = session.format_full_transcript()
+
         session.protocol = await self.llm.finalize_protocol(
-            session.protocol, session.format_full_transcript(),
+            session.protocol, transcript,
         )
 
         # Quality metrics
