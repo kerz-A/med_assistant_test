@@ -16,13 +16,12 @@ ALLOWED_EDITABLE_FIELDS = {
     "full_name", "age", "gender",
 }
 
-import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..config import settings
 from ..core.pipeline import ProcessingPipeline
 from ..core.session import SessionState, SessionStage, session_manager
-from ..core.vad_segmenter import VADSegmenter, SpeechSegment, SAMPLE_RATE
+from ..core.vad_segmenter import VADSegmenter, SpeechSegment, merge_segments_into_turns
 from ..models.messages import (
     CalibrationComplete,
     ClientMessage,
@@ -50,38 +49,6 @@ async def _send_protocol(ws: WebSocket, session: SessionState) -> None:
         filled_fields=session.get_filled_fields(),
     )
     await _safe_send(ws, msg.model_dump_json())
-
-
-def _merge_segments_into_turns(segments: list[SpeechSegment], max_gap_s: float = 1.5) -> list[SpeechSegment]:
-    """Merge consecutive VAD segments with short gaps into speaker turns.
-
-    If gap between two segments < max_gap_s, they're from the same speaker.
-    The silence between them is filled with zeros (silence).
-    """
-    if not segments:
-        return []
-
-    turns: list[SpeechSegment] = []
-    current = segments[0]
-
-    for seg in segments[1:]:
-        gap = seg.start_time - current.end_time
-        if gap < max_gap_s:
-            # Same speaker turn — merge with silence fill
-            gap_samples = int(gap * SAMPLE_RATE)
-            silence = np.zeros(max(gap_samples, 0), dtype=np.float32)
-            current = SpeechSegment(
-                audio=np.concatenate([current.audio, silence, seg.audio]),
-                start_time=current.start_time,
-                end_time=seg.end_time,
-            )
-        else:
-            # New speaker turn
-            turns.append(current)
-            current = seg
-
-    turns.append(current)
-    return turns
 
 
 def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmenter) -> APIRouter:
@@ -208,7 +175,7 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
 
                         # Merge VAD segments into speaker turns (gap > 1.5s = new speaker)
                         cal_segments = session.get_calibration_segments()
-                        turns = _merge_segments_into_turns(cal_segments, max_gap_s=1.5)
+                        turns = merge_segments_into_turns(cal_segments, max_gap_s=1.5)
                         logger.info("[WS] Calibration: %d VAD segments → %d speaker turns",
                                     len(cal_segments), len(turns))
 

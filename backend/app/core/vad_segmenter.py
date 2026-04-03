@@ -215,3 +215,33 @@ class VADSegmenter:
                 await self._on_segment(segment)
             return segment
         return None
+
+
+def merge_segments_into_turns(segments: list[SpeechSegment], max_gap_s: float = 1.5) -> list[SpeechSegment]:
+    """Merge consecutive VAD segments with short gaps into speaker turns.
+
+    If gap between two segments < max_gap_s, they're from the same speaker.
+    The silence between them is filled with zeros (silence).
+    """
+    if not segments:
+        return []
+
+    turns: list[SpeechSegment] = []
+    current = segments[0]
+
+    for seg in segments[1:]:
+        gap = seg.start_time - current.end_time
+        if gap < max_gap_s:
+            gap_samples = int(gap * SAMPLE_RATE)
+            silence = np.zeros(max(gap_samples, 0), dtype=np.float32)
+            current = SpeechSegment(
+                audio=np.concatenate([current.audio, silence, seg.audio]),
+                start_time=current.start_time,
+                end_time=seg.end_time,
+            )
+        else:
+            turns.append(current)
+            current = seg
+
+    turns.append(current)
+    return turns
