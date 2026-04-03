@@ -27,10 +27,50 @@ export interface Vitals {
   spo2?: number | null; systolic_bp?: string | null;
 }
 
+export interface QualityCriteria {
+  greeting_and_contact?: number;
+  conversation_structure?: number;
+  needs_identification?: number;
+  current_complaints_identification?: number;
+  disease_history?: number;
+  general_medical_history?: number;
+  medication_history?: number;
+  family_history?: number;
+  prevention_and_risk_control?: number;
+  treatment_planning?: number;
+  visit_closure?: number;
+}
+
+export interface ExaminationQuality {
+  overall_score?: number;
+  criteria_completed?: number;
+  criteria_total?: number;
+}
+
+export interface DialogueAnalytics {
+  doctor_showed_empathy?: number;
+  doctor_interrupted_patient?: number;
+  patient_asked_questions?: number;
+  doctor_used_medical_jargon?: number;
+  doctor_confirmed_understanding?: number;
+  lifestyle_discussed?: number;
+  allergies_discussed?: number;
+  shared_decision_making?: number;
+  patient_compliance_assessment?: number;
+  doctor_pacing?: number;
+}
+
+export interface ClinicalDecisionSupport {
+  quality_criteria?: QualityCriteria;
+  examination_quality?: ExaminationQuality;
+  dialogue_analytics?: DialogueAnalytics;
+}
+
 export interface Protocol {
   patient_info?: PatientInfo;
   exam_data?: ExamData;
   vitals?: Vitals;
+  clinical_decision_support?: ClinicalDecisionSupport;
 }
 
 export interface CalibrationCompleteMsg {
