@@ -115,7 +115,8 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
     t0 = time.monotonic()
 
     try:
-        async with websockets.connect(url, ping_interval=30, ping_timeout=300) as ws:
+        async with websockets.connect(url, ping_interval=30, ping_timeout=300,
+                                       max_size=2**23) as ws:
             # Stage 1: Calibration
             await ws.send(json.dumps({"type": "start_calibration", "config": {"num_speakers": 2}}))
             await asyncio.sleep(0.3)
@@ -125,11 +126,38 @@ async def run_scenario(scenario: dict, audio_dir: str, url: str) -> dict:
             await collect_messages(ws, timeout=300, stop_on="calibrated",
                                    transcript=transcript, protocol=protocol)
 
-            # Stage 2: Recording
+            # Stage 2: Recording — stream and collect messages in parallel
+            # Without parallel collection, backend messages accumulate during long
+            # streams and the websocket buffer overflows, killing the connection.
             await ws.send(json.dumps({"type": "start_recording"}))
             await asyncio.sleep(0.3)
+
+            async def _drain_messages():
+                """Drain incoming messages during streaming to prevent buffer overflow."""
+                try:
+                    while True:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        msg = json.loads(raw)
+                        msg_type = msg.get("type", "?")
+                        if msg_type == "transcript_update":
+                            for u in msg.get("utterances", []):
+                                transcript.append({"speaker": u["speaker"], "text": u["text"]})
+                        elif msg_type == "protocol_update":
+                            protocol.update(msg.get("protocol", {}))
+                except asyncio.TimeoutError:
+                    pass  # no more messages, streaming probably ended
+                except Exception:
+                    pass
+
+            drain_task = asyncio.create_task(_drain_messages())
             exam_duration = await stream_wav(ws, exam_wav)
-            # Wait proportional to audio length: on CPU, processing can take 1.5x real-time
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+
+            # Collect remaining messages after stream ends
             post_stream_timeout = max(60, exam_duration * 2)
             await collect_messages(ws, timeout=post_stream_timeout, transcript=transcript, protocol=protocol)
 
