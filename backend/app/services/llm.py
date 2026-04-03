@@ -105,6 +105,19 @@ EXTRACTION_PROMPT = """\
   }}
 }}"""
 
+PATIENT_SUMMARY_PROMPT = """\
+Ты — медицинский ассистент. Суммаризируй слова пациента из приёма у врача.
+
+ОБЯЗАТЕЛЬНО СОХРАНИ:
+- Точные формулировки жалоб (локализация, характер, иррадиация, шкала боли)
+- Хронологию симптомов (когда началось, как менялось)
+- Названия лекарств и дозировки
+- Аллергии и их проявления
+- Семейную историю болезней
+- Показатели, которые пациент называл (рост, вес, давление, пульс, сатурация)
+
+Ответь на русском, 15-20 предложений. Пиши от третьего лица ("Пациент жалуется на...")."""
+
 FINALIZATION_PROMPT = """\
 Ты — опытный врач. Сформируй заключение на основе данных пациента и разговора.
 Отвечай ТОЛЬКО на русском языке.
@@ -302,6 +315,7 @@ class LLMService:
         max_retries = 5
         retry_start = time.monotonic()
         resp = None
+        retried_auth = False
 
         for attempt in range(max_retries):
             # Hard cap: don't retry longer than 30s total
@@ -359,6 +373,14 @@ class LLMService:
                     logger.warning("[LLM] Rate limited (%d), cooldown %.1fs (attempt %d/%d)",
                                    resp.status_code, wait, attempt + 1, max_retries)
                     continue  # Next iteration sleeps inside lock via cooldown check
+
+                # GigaChat 401: token expired mid-session — refresh and retry once
+                if resp.status_code == 401 and self._is_gigachat and not retried_auth:
+                    logger.info("[LLM] GigaChat 401, refreshing token...")
+                    await self._refresh_gigachat_token()
+                    self._client.headers["Authorization"] = f"Bearer {self._gigachat_token}"
+                    retried_auth = True
+                    continue
 
             # Success (outside lock)
             logger.info("[LLM] Response: %d in %dms", resp.status_code, ms)
@@ -449,6 +471,13 @@ class LLMService:
                 except Exception as e2:
                     logger.error("[LLM-FALLBACK] Also failed: %s", e2)
             raise
+
+    # ---- Patient speech summarization (for long sessions) ----
+
+    async def summarize_patient_speech(self, patient_text: str) -> str:
+        """Summarize all patient utterances into a compact medical narrative."""
+        logger.info("[LLM] Summarizing patient speech (%d chars)...", len(patient_text))
+        return await self._chat(PATIENT_SUMMARY_PROMPT, patient_text, json_mode=False)
 
     # ---- Finalization ----
 

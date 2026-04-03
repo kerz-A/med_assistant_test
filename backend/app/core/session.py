@@ -158,6 +158,12 @@ class SessionState:
             lines.append(f"[{role}]: {u.text}")
         return "\n".join(lines)
 
+    def format_patient_utterances(self) -> str:
+        """Extract only patient utterances for summarization."""
+        return "\n".join(
+            u.text for u in self.transcript if u.speaker == "patient"
+        )
+
 
 class SessionManager:
     def __init__(self):

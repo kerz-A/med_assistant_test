@@ -267,7 +267,7 @@ def create_websocket_router(pipeline: ProcessingPipeline, vad_service: VADSegmen
                             await on_recording_segment(final_seg)
 
                         # Wait for all recording tasks
-                        await session.wait_for_processing_complete(timeout=60.0)
+                        await session.wait_for_processing_complete(timeout=300.0)
 
                         # Flush remaining pending utterances through LLM
                         if session.has_pending_utterances():
