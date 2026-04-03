@@ -1,105 +1,105 @@
-# MedScribe — Realtime Medical Protocol Assistant
+# MedScribe — Ассистент заполнения медицинского протокола в реальном времени
 
-Test implementation of a real-time system that fills in a medical examination protocol during a doctor-patient visit. The system listens, transcribes, identifies speakers (doctor/patient), extracts medical data, and populates the protocol on the fly.
+Тестовая реализация системы реального времени для заполнения медицинского протокола осмотра во время приёма врача. Система слушает, транскрибирует, определяет роли (врач/пациент), извлекает медицинские данные и заполняет протокол на лету.
 
-> **Note:** This is a test/prototype implementation. In production with adequate GPU resources, all ML models (ASR, VAD, Speaker ID) should run on GPU for real-time field population effect. Current setup supports both CPU and GPU modes.
+> **Важно:** Это тестовая/прототипная реализация. В production при наличии достаточных GPU-ресурсов все ML-модели (ASR, VAD, Speaker ID) должны работать на GPU для эффекта заполнения полей в реальном времени. Текущая сборка поддерживает режимы CPU и GPU.
 
-## 4 Stages of Examination
+## 4 стадии приёма
 
-| Stage | Action | What happens |
-|-------|--------|--------------|
-| Calibration | Doctor asks patient's name/age/gender | Voice identification + patient data extraction |
-| Recording | Doctor conducts examination | Real-time transcription + protocol field population |
-| Editing | Doctor reviews/edits fields | Fields become editable |
-| Finalization | Diagnosis generation | LLM generates diagnosis + treatment plan + recommendations |
+| Стадия | Действие | Что происходит |
+|--------|----------|----------------|
+| Калибровка | Врач спрашивает ФИО/возраст/пол | Идентификация голосов + извлечение данных пациента |
+| Запись | Врач ведёт приём | Транскрипция в реальном времени + заполнение полей протокола |
+| Редактирование | Врач проверяет/правит поля | Поля становятся редактируемыми |
+| Финализация | Генерация заключения | LLM формирует диагноз + план лечения + рекомендации |
 
-## Quick Start
+## Быстрый старт
 
 ```bash
-cp .env.example .env   # configure LLM provider and model settings
+cp .env.example .env   # настроить LLM-провайдер и параметры моделей
 ```
 
-### GPU deployment (recommended for real-time experience)
+### Развёртывание на GPU (рекомендуется для работы в реальном времени)
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build --no-deps backend frontend
 ```
 
-Requires NVIDIA driver >= 525.60 (CUDA 12.1). All ML models run on GPU — ASR processes segments in <1s, giving real-time field updates.
+Требуется NVIDIA драйвер >= 525.60 (CUDA 12.1). Все ML-модели работают на GPU — ASR обрабатывает сегменты за <1с, обеспечивая обновление полей в реальном времени.
 
-### CPU deployment (sufficient for testing)
+### Развёртывание на CPU (достаточно для тестирования)
 
 ```bash
 docker compose up --build --no-deps backend frontend
 ```
 
-ASR runs ~3-5x slower than real-time. Set `WHISPER_MODEL=small` in `.env` for faster processing at slight quality cost.
+ASR работает в ~3-5 раз медленнее реального времени. Установите `WHISPER_MODEL=small` в `.env` для ускорения с небольшой потерей качества.
 
-Frontend: http://localhost:3000 | Health check: http://localhost:8000/api/health
+Фронтенд: http://localhost:3000 | Проверка здоровья: http://localhost:8000/api/health
 
-## LLM Provider
+## Выбор LLM-провайдера
 
-The system uses a cloud LLM for medical data extraction and diagnosis generation. Configure in `.env`:
+Система использует облачную LLM для извлечения медицинских данных и генерации диагноза. Настройка в `.env`:
 
-| Provider | Config | Notes |
-|----------|--------|-------|
-| **GigaChat** (Sber) | `LLM_PROVIDER=gigachat` | Russian-optimized, recommended for Russian medical text |
-| DeepSeek | `LLM_PROVIDER=deepseek` | Good quality, affordable |
-| Groq | `LLM_PROVIDER=groq` | Fast inference, free tier available |
-| OpenAI | `LLM_PROVIDER=openai` | GPT-4o-mini, highest quality |
-| Ollama (local) | `LLM_PROVIDER=ollama` | Requires `ollama` service + GPU with >= 2 GB VRAM |
+| Провайдер | Конфигурация | Примечания |
+|-----------|-------------|------------|
+| **GigaChat** (Сбер) | `LLM_PROVIDER=gigachat` | Оптимизирован для русского языка, рекомендуется для медицинских текстов |
+| DeepSeek | `LLM_PROVIDER=deepseek` | Хорошее качество, доступная цена |
+| Groq | `LLM_PROVIDER=groq` | Быстрый вывод, есть бесплатный тариф |
+| OpenAI | `LLM_PROVIDER=openai` | GPT-4o-mini, наивысшее качество |
+| Ollama (локально) | `LLM_PROVIDER=ollama` | Требует сервис `ollama` + GPU с >= 2 ГБ VRAM |
 
-LLM runs via API — no local GPU memory needed (except Ollama). Add `--no-deps backend frontend` to skip the Ollama container when using cloud providers.
+LLM работает через API — локальная GPU-память не нужна (кроме Ollama). Добавьте `--no-deps backend frontend` чтобы не запускать контейнер Ollama при использовании облачных провайдеров.
 
-## Tech Stack
+## Технологический стек
 
-| Component | Technology | GPU | CPU |
+| Компонент | Технология | GPU | CPU |
 |-----------|-----------|-----|-----|
-| VAD | Silero VAD (~5 MB) | ~2ms/chunk | ~5ms/chunk |
-| ASR | faster-whisper medium (~1.5 GB) | ~0.5-1s/segment | ~3-5s/segment |
-| Speaker ID | ECAPA-TDNN SpeechBrain (~120 MB) | ~20ms | ~100-200ms |
-| LLM | Cloud API (GigaChat/DeepSeek/Groq/OpenAI) | — | — |
+| VAD | Silero VAD (~5 МБ) | ~2мс/чанк | ~5мс/чанк |
+| ASR | faster-whisper medium (~1.5 ГБ) | ~0.5-1с/сегмент | ~3-5с/сегмент |
+| Speaker ID | ECAPA-TDNN SpeechBrain (~120 МБ) | ~20мс | ~100-200мс |
+| LLM | Облачный API (GigaChat/DeepSeek/Groq/OpenAI) | — | — |
 | Backend | Python 3.11, FastAPI, WebSocket | | |
 | Frontend | TypeScript, Vite, Nginx | | |
 
-## Long Session Support
+## Поддержка длительных сессий
 
-Sessions over ~50 utterances (~15+ minutes) use automatic patient speech summarization before finalization. This compresses the transcript from ~27 KB to ~5-7 KB while preserving all medically significant details, preventing LLM context overflow.
+Сессии свыше ~50 реплик (~15+ минут) используют автоматическую суммаризацию реплик пациента перед финализацией. Это сжимает транскрипт с ~27 КБ до ~5-7 КБ, сохраняя все медицински значимые данные и предотвращая переполнение контекста LLM.
 
-## Testing
+## Тестирование
 
-### Unit tests
+### Юнит-тесты
 
 ```bash
 cd backend && python -m pytest tests/ -v
 ```
 
-### End-to-end scenario tests
+### Сквозные тесты по сценариям
 
 ```bash
 cd tools
 pip install -r requirements.txt   # edge-tts, websockets, imageio-ffmpeg
 
-# Generate test audio (requires internet for edge-tts)
+# Генерация тестового аудио (требуется интернет для edge-tts)
 python generate_test_scenarios.py --scenario 01_cardiology
 
-# Run scenario
+# Запуск сценария
 python run_all_scenarios.py --scenarios 01_cardiology
 
-# Run all 11 scenarios including long session test
+# Запуск всех 11 сценариев включая длительную сессию
 python run_all_scenarios.py
 ```
 
-10 medical specialties + 1 long session scenario (70 utterances, ~14 min audio) for testing long session handling and GigaChat token refresh.
+10 медицинских специализаций + 1 сценарий длительной сессии (70 реплик, ~14 мин аудио) для тестирования работы с длинными сессиями и обновления токена GigaChat.
 
-## Environment Variables
+## Переменные окружения
 
-See `.env.example` for full list. Key settings:
+Полный список см. в `.env.example`. Основные настройки:
 
 ```env
 # LLM
 LLM_PROVIDER=gigachat          # gigachat | deepseek | groq | openai | ollama
-GIGACHAT_AUTH_KEY=...           # required for gigachat
+GIGACHAT_AUTH_KEY=...           # обязателен для gigachat
 
 # Whisper ASR
 WHISPER_MODEL=medium            # tiny | base | small | medium | large-v3
