@@ -27,7 +27,7 @@ docker compose up --build --no-deps backend frontend
 
 ASR работает в ~3-5 раз медленнее реального времени. Установите `WHISPER_MODEL=small` в `.env` для ускорения с небольшой потерей качества.
 
-Фронтенд: http://localhost:3000 | Проверка здоровья: http://localhost:8000/api/health
+Фронтенд: http://localhost:3000 | Health check: http://localhost:8000/api/health
 
 ---
 
